@@ -1,0 +1,29 @@
+{
+  "appName": {
+    "message": "ChatGPT Enter Key Control (by marusin)"
+  },
+  "appNameShort": {
+    "message": "ChatGPT Enter Key Control"
+  },
+  "appDescription": {
+    "message": "防止在 ChatGPT 中本想换行却误发送。"
+  },
+  "enableEnterControl": {
+    "message": "启用 Enter 控制"
+  },
+  "sendKey": {
+    "message": "发送键"
+  },
+  "language": {
+    "message": "语言"
+  },
+  "languageSetting": {
+    "message": "语言设置"
+  },
+  "versionLabel": {
+    "message": "版本"
+  },
+  "otherExtensions": {
+    "message": "查看 Chrome 扩展"
+  }
+}

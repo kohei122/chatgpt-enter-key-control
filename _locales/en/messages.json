@@ -1,0 +1,29 @@
+{
+  "appName": {
+    "message": "ChatGPT Enter Key Control (by marusin)"
+  },
+  "appNameShort": {
+    "message": "ChatGPT Enter Key Control"
+  },
+  "appDescription": {
+    "message": "Prevent accidental sends when you meant to insert a line break in ChatGPT."
+  },
+  "enableEnterControl": {
+    "message": "Enable Enter control"
+  },
+  "sendKey": {
+    "message": "Send key"
+  },
+  "language": {
+    "message": "Language"
+  },
+  "languageSetting": {
+    "message": "Language setting"
+  },
+  "versionLabel": {
+    "message": "Version"
+  },
+  "otherExtensions": {
+    "message": "View Chrome extensions"
+  }
+}

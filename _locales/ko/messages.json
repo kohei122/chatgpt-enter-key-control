@@ -1,0 +1,29 @@
+{
+  "appName": {
+    "message": "ChatGPT Enter Key Control (by marusin)"
+  },
+  "appNameShort": {
+    "message": "ChatGPT Enter Key Control"
+  },
+  "appDescription": {
+    "message": "ChatGPT에서 줄바꿈하려다 실수로 전송하는 일을 방지합니다."
+  },
+  "enableEnterControl": {
+    "message": "Enter 제어 활성화"
+  },
+  "sendKey": {
+    "message": "전송 키"
+  },
+  "language": {
+    "message": "언어"
+  },
+  "languageSetting": {
+    "message": "언어 설정"
+  },
+  "versionLabel": {
+    "message": "버전"
+  },
+  "otherExtensions": {
+    "message": "Chrome 확장 보기"
+  }
+}

@@ -1,3 +1,8 @@
+(() => {
+const INIT_KEY = "__chatgptEnterKeyControlInitialized";
+if (window[INIT_KEY]) return;
+window[INIT_KEY] = true;
+
 function sanitizeMode(mode) {
   return mode === "ctrl" || mode === "both" || mode === "combo" ? mode : "shift";
 }
@@ -101,3 +106,4 @@ function handleKey(event) {
 }
 
 document.addEventListener("keydown", handleKey, { capture: true });
+})();

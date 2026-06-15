@@ -1,0 +1,29 @@
+{
+  "appName": {
+    "message": "ChatGPT Enter Key Control (by marusin)"
+  },
+  "appNameShort": {
+    "message": "ChatGPT Enter Key Control"
+  },
+  "appDescription": {
+    "message": "ChatGPTで「改行したかったのに送信してしまう」を防ぎます。"
+  },
+  "enableEnterControl": {
+    "message": "有効化"
+  },
+  "sendKey": {
+    "message": "送信キー"
+  },
+  "language": {
+    "message": "言語"
+  },
+  "languageSetting": {
+    "message": "言語設定"
+  },
+  "versionLabel": {
+    "message": "バージョン"
+  },
+  "otherExtensions": {
+    "message": "Chrome拡張を見る"
+  }
+}
