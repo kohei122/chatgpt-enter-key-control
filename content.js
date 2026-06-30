@@ -32,6 +32,7 @@ const DEFAULT_SETTINGS = {
   enabled: true,
   mode: "shift"
 };
+const DEV_FORCE_MAC_PLATFORM_KEY = "devForceMacPlatform";
 
 let settings = { ...DEFAULT_SETTINGS };
 let settingsLoaded = false;
@@ -57,8 +58,22 @@ function getIsMacPlatform() {
   });
 }
 
+function getDevForceMacPlatform() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get({ [DEV_FORCE_MAC_PLATFORM_KEY]: false }, (stored) => {
+      resolve(stored[DEV_FORCE_MAC_PLATFORM_KEY] === true);
+    });
+  });
+}
+
+async function resolveIsMacPlatform() {
+  const devForceMacPlatform = await getDevForceMacPlatform();
+  if (devForceMacPlatform) return true;
+  return getIsMacPlatform();
+}
+
 async function loadSettings() {
-  isMacPlatform = await getIsMacPlatform();
+  isMacPlatform = await resolveIsMacPlatform();
 
   chrome.storage.local.get(DEFAULT_SETTINGS, (stored) => {
     const next = {
@@ -83,6 +98,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
   if (changes.mode) {
     settings.mode = sanitizeModeForPlatform(changes.mode.newValue, isMacPlatform);
+  }
+
+  if (changes[DEV_FORCE_MAC_PLATFORM_KEY]) {
+    resolveIsMacPlatform().then((nextIsMacPlatform) => {
+      isMacPlatform = nextIsMacPlatform;
+      settings.mode = sanitizeModeForPlatform(settings.mode, isMacPlatform);
+    });
   }
 });
 
