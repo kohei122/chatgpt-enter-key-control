@@ -6,6 +6,7 @@ A Chrome extension that prevents accidental message sending in ChatGPT.
 
 - Press Enter to insert a newline  
 - Press Shift + Enter to send your message  
+- On Mac, Cmd + Enter and Shift + Cmd + Enter can also be selected as send shortcuts
 
 ## Benefits
 
@@ -26,6 +27,10 @@ A Chrome extension that prevents accidental message sending in ChatGPT.
 3. Start using ChatGPT with improved input behavior  
 
 ## Changelog
+
+### 1.2.0
+- Added Mac send shortcut support for Cmd+Enter and Shift+Cmd+Enter
+- Added extra IME composition safeguards for Enter handling
 
 ### 1.1.6
 - Added Spanish localization

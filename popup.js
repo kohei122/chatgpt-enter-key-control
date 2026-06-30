@@ -15,11 +15,25 @@ function sanitizeEnabled(enabled) {
 }
 
 function sanitizeMode(mode) {
-  return mode === "ctrl" || mode === "both" || mode === "combo" ? mode : "shift";
+  return mode === "ctrl" ||
+    mode === "cmd" ||
+    mode === "both" ||
+    mode === "combo" ||
+    mode === "shiftCmd"
+    ? mode
+    : "shift";
+}
+
+function sanitizeModeForPlatform(mode, isMac) {
+  const sanitized = sanitizeMode(mode);
+  if (!isMac && (sanitized === "cmd" || sanitized === "shiftCmd")) {
+    return "shift";
+  }
+  return sanitized;
 }
 
 const toggle = document.getElementById("toggle");
-const radios = document.querySelectorAll('input[name="mode"]');
+const modeOptions = document.getElementById("mode-options");
 const appVersion = document.getElementById("app-version");
 const appHeader = document.getElementById("app-header");
 const enableEnterControlLabel = document.getElementById("label-enable-enter-control");
@@ -30,6 +44,7 @@ const secondaryContent = document.getElementById("secondary-content");
 const otherExtensionsLink = document.getElementById("other-extensions-link");
 const languageSettingLabel = document.getElementById("language-setting-label");
 const languageSelect = document.getElementById("language-select");
+let isMacPlatform = false;
 
 function getForcedLang() {
   const forcedLang = localStorage.getItem(FORCE_LANG_STORAGE_KEY);
@@ -85,6 +100,67 @@ function applyPopupTexts(forcedMessages) {
   if (appVersion) {
     appVersion.textContent = `${getMessage("versionLabel", forcedMessages)} v${chrome.runtime.getManifest().version}`;
   }
+}
+
+function getModeOptionConfigs(isMac) {
+  const baseOptions = [
+    { value: "shift", labelKey: "modeShift" },
+    { value: "ctrl", labelKey: "modeCtrl" },
+    { value: "both", labelKey: "modeBoth" },
+    { value: "combo", labelKey: "modeCombo" }
+  ];
+
+  if (!isMac) return baseOptions;
+
+  return [
+    { value: "shift", labelKey: "modeShift" },
+    { value: "ctrl", labelKey: "modeCtrl" },
+    { value: "cmd", labelKey: "modeCmd" },
+    { value: "both", labelKey: "modeBothMac" },
+    { value: "combo", labelKey: "modeCombo" },
+    { value: "shiftCmd", labelKey: "modeShiftCmd" }
+  ];
+}
+
+function renderModeOptions(isMac, selectedMode, forcedMessages) {
+  if (!modeOptions) return;
+
+  const title = sendKeyTitle;
+  modeOptions.replaceChildren();
+  if (title) modeOptions.append(title);
+
+  for (const option of getModeOptionConfigs(isMac)) {
+    const label = document.createElement("label");
+    const radio = document.createElement("input");
+    const text = document.createElement("span");
+
+    radio.type = "radio";
+    radio.name = "mode";
+    radio.value = option.value;
+    radio.checked = option.value === selectedMode;
+
+    text.textContent = getMessage(option.labelKey, forcedMessages);
+
+    label.append(radio, " ", text);
+    modeOptions.append(label);
+  }
+}
+
+function getIsMacPlatform() {
+  return new Promise((resolve) => {
+    if (typeof chrome === "undefined" || !chrome.runtime?.getPlatformInfo) {
+      resolve(false);
+      return;
+    }
+
+    chrome.runtime.getPlatformInfo((info) => {
+      if (chrome.runtime.lastError) {
+        resolve(false);
+        return;
+      }
+      resolve(info?.os === "mac");
+    });
+  });
 }
 
 function setupLanguageSelect(forceLang) {
@@ -152,7 +228,11 @@ function injectContentScriptIntoActiveTab() {
 
 async function initializePopup() {
   const forceLang = getForcedLang();
-  const forcedMessages = await loadForcedMessages(forceLang);
+  const [forcedMessages, isMac] = await Promise.all([
+    loadForcedMessages(forceLang),
+    getIsMacPlatform()
+  ]);
+  isMacPlatform = isMac;
 
   injectContentScriptIntoActiveTab();
   setupSecondarySection();
@@ -161,15 +241,14 @@ async function initializePopup() {
   applyPopupTexts(forcedMessages);
 
   chrome.storage.local.get(DEFAULT_SETTINGS, (stored) => {
+    const mode = sanitizeModeForPlatform(stored.mode, isMac);
     const settings = {
       enabled: sanitizeEnabled(stored.enabled),
-      mode: sanitizeMode(stored.mode)
+      mode
     };
 
     toggle.checked = settings.enabled;
-
-    const selected = document.querySelector(`input[name="mode"][value="${settings.mode}"]`);
-    if (selected) selected.checked = true;
+    renderModeOptions(isMac, settings.mode, forcedMessages);
 
     chrome.storage.local.set(settings);
   });
@@ -181,9 +260,12 @@ toggle.addEventListener("change", () => {
   chrome.storage.local.set({ enabled: sanitizeEnabled(toggle.checked) });
 });
 
-radios.forEach((radio) => {
-  radio.addEventListener("change", () => {
+if (modeOptions) {
+  modeOptions.addEventListener("change", (event) => {
+    const radio = event.target;
+    if (!(radio instanceof HTMLInputElement)) return;
+    if (radio.name !== "mode") return;
     if (!radio.checked) return;
-    chrome.storage.local.set({ mode: sanitizeMode(radio.value) });
+    chrome.storage.local.set({ mode: sanitizeModeForPlatform(radio.value, isMacPlatform) });
   });
-});
+}

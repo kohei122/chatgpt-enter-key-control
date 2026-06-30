@@ -14,6 +14,27 @@
   "sendKey": {
     "message": "Tecla de envío"
   },
+  "modeShift": {
+    "message": "Shift+Enter"
+  },
+  "modeCtrl": {
+    "message": "Ctrl+Enter"
+  },
+  "modeCmd": {
+    "message": "Cmd+Enter"
+  },
+  "modeCombo": {
+    "message": "Shift+Ctrl+Enter"
+  },
+  "modeShiftCmd": {
+    "message": "Shift+Cmd+Enter"
+  },
+  "modeBoth": {
+    "message": "Shift+Enter / Ctrl+Enter"
+  },
+  "modeBothMac": {
+    "message": "Shift / Ctrl / Cmd + Enter"
+  },
   "language": {
     "message": "Idioma"
   },
