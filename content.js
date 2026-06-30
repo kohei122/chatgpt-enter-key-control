@@ -1,7 +1,9 @@
 (() => {
 const INIT_KEY = "__chatgptEnterKeyControlInitialized";
-if (window[INIT_KEY]) return;
+const INIT_MARKER_ATTRIBUTE = "data-chatgpt-enter-key-control-initialized";
+if (window[INIT_KEY] || document.documentElement?.hasAttribute(INIT_MARKER_ATTRIBUTE)) return;
 window[INIT_KEY] = true;
+document.documentElement?.setAttribute(INIT_MARKER_ATTRIBUTE, "true");
 
 function sanitizeMode(mode) {
   return mode === "ctrl" ||
@@ -122,6 +124,11 @@ function dispatchEnter(target, options = {}) {
   target.dispatchEvent(event);
 }
 
+function blockEnterEvent(event) {
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}
+
 function handleKey(event) {
   const isEnter = event.code === "Enter" || event.code === "NumpadEnter";
   const isPromptTextarea = event.target && event.target.id === "prompt-textarea";
@@ -161,21 +168,21 @@ function handleKey(event) {
 
   // Enter only -> newline
   if (isOnlyEnter) {
-    event.preventDefault();
+    blockEnterEvent(event);
     dispatchEnter(event.target, { shiftKey: true });
     return;
   }
 
   // Configured shortcut -> send
   if (isSend) {
-    event.preventDefault();
+    blockEnterEvent(event);
     dispatchEnter(event.target, { metaKey: true });
     return;
   }
 
   // Block unapproved modified Enter to avoid ChatGPT default shortcuts.
   if (event.ctrlKey || event.shiftKey || event.metaKey) {
-    event.preventDefault();
+    blockEnterEvent(event);
   }
 }
 
