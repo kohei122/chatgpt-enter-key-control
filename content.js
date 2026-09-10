@@ -186,6 +186,9 @@ function handleKey(event) {
   }
 }
 
+// Normalize only narrowly eligible plain-text pastes before insertion.
+initPasteCRNormalization();
+
 document.addEventListener("keydown", handleKey, { capture: true });
 
 document.addEventListener("compositionstart", (event) => {
@@ -198,4 +201,158 @@ document.addEventListener("compositionend", (event) => {
   isComposingActive = false;
   lastCompositionEndAt = performance.now();
 }, { capture: true });
+
+function initPasteCRNormalization() {
+  let faulted = false, composing = false, imeAt = -Infinity;
+  let session = null, inCommand = false;
+  const handled = new WeakSet();
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.enabled && session) session.finish();
+  });
+
+  // Independent paste safeguards; preserve the existing Enter composition handling.
+  const inComposer = target => {
+    const root = document.getElementById("prompt-textarea");
+    return root && target && root.contains(target);
+  };
+  for (const type of ["compositionstart", "compositionupdate", "compositionend"]) {
+    window.addEventListener(type, event => {
+      if (!inComposer(event.target)) return;
+      composing = type !== "compositionend";
+      imeAt = performance.now();
+    }, true);
+  }
+  window.addEventListener("keydown", event => {
+    if (inComposer(event.target) && (event.isComposing || event.keyCode === 229)) {
+      imeAt = performance.now();
+    }
+  }, true);
+
+  function isSupportedComposer(root) {
+    return root?.nodeType === 1 && root.tagName === "DIV" && root.isConnected &&
+      root.getAttribute("contenteditable") === "true" && root.isContentEditable &&
+      root.classList.contains("ProseMirror") && document.getElementById("prompt-textarea") === root;
+  }
+  function isExpectedEmptyComposer(root) {
+    if (root.textContent !== "" || root.childNodes.length !== 1) return false;
+    const p = root.firstChild;
+    return p.nodeType === 1 && p.tagName === "P" && p.isContentEditable &&
+      Array.from(p.attributes).every(a =>
+        a.name === "dir" || a.name === "data-placeholder" ||
+        (a.name === "data-empty-paragraph" && a.value === "true") ||
+        (a.name === "class" && a.value.trim().split(/\s+/).every(c => c === "placeholder"))) &&
+      (p.childNodes.length === 0 || (p.childNodes.length === 1 &&
+        ((p.firstChild.nodeType === 3 && p.firstChild.length === 0) ||
+         (p.firstChild.nodeType === 1 && p.firstChild.tagName === "BR" &&
+          Array.from(p.firstChild.attributes).every(a => a.name === "class") &&
+          (!p.firstChild.hasAttribute("class") ||
+           p.firstChild.getAttribute("class") === "ProseMirror-trailingBreak")))));
+  }
+
+  function hasComposerSelection(root) {
+    const s = window.getSelection();
+    return s?.rangeCount === 1 && s.isCollapsed && !!s.anchorNode && !!s.focusNode &&
+      root.contains(s.anchorNode) && root.contains(s.focusNode);
+  }
+
+  // Do not broaden this to rich content, mixed newlines, blank lines, or nonempty editors.
+  function normalizePlainTextPaste(data) {
+    if (!data || data.files.length || data.types.length !== 1 || data.types[0] !== "text/plain" ||
+        Array.from(data.items).some(i => i.kind !== "string" || i.type !== "text/plain")) return null;
+    const text = data.getData("text/plain");
+    if (text.length > 8000 || !text.includes("\r\n") ||
+        /[\r\n]/.test(text.replace(/\r\n/g, ""))) return null;
+    const normalized = text.replace(/\r\n/g, "\n");
+    if (normalized === text) return null;
+    const lines = normalized.split("\n");
+    return lines.length >= 2 && lines.length <= 20 && lines.every(line => line.trim())
+      ? { normalized, lines } : null;
+  }
+
+  function selectionAtEnd(root) {
+    if (!hasComposerSelection(root)) return false;
+    const s = window.getSelection();
+    const lastP = root.childNodes[root.childNodes.length - 1];
+    const last = lastP?.childNodes[lastP.childNodes.length - 1];
+    const endPoint = (node, offset) =>
+      (node === last && node?.nodeType === 3 && offset === node.length) ||
+      (node === lastP && offset === lastP?.childNodes.length) ||
+      (node === root && offset === root.childNodes.length);
+    return endPoint(s.anchorNode, s.anchorOffset) && endPoint(s.focusNode, s.focusOffset);
+  }
+
+  function matchesInsertedParagraphs(root, lines) {
+    return root.childNodes.length === lines.length && Array.from(root.childNodes).every((p, i) =>
+      p.nodeType === 1 && p.tagName === "P" && p.isContentEditable &&
+      Array.from(p.attributes).every(a => a.name === "dir") && p.childNodes.length === 1 &&
+      p.firstChild.nodeType === 3 && p.firstChild.data === lines[i]);
+  }
+
+  function handlePasteCRNormalization(event) {
+    if (handled.has(event) || inCommand) return;
+    if (session) session.finish();
+    if (faulted || !settingsLoaded || !settings.enabled) return;
+    if (!event.isTrusted || !event.cancelable || event.defaultPrevented) return;
+    if (!/^https:\/\/(chatgpt\.com|chat\.openai\.com)(\/|$)/.test(location.href)) return;
+    const root = document.getElementById("prompt-textarea");
+    if (!isSupportedComposer(root) || !root.contains(event.target)) return;
+    if (composing || isComposingActive || performance.now() - imeAt < COMPOSITION_END_GRACE_MS ||
+        (lastCompositionEndAt > 0 && performance.now() - lastCompositionEndAt < COMPOSITION_END_GRACE_MS)) return;
+    if (!isExpectedEmptyComposer(root) || !document.hasFocus() || document.activeElement !== root ||
+        !hasComposerSelection(root) || typeof document.execCommand !== "function") return;
+
+    let paste;
+    try { paste = normalizePlainTextPaste(event.clipboardData); }
+    catch (_) { return; }
+    if (!paste) return;
+
+    handled.add(event);
+    const url = location.href;
+    let done = false, result = null, timer = null;
+    const listeners = [];
+    function finish(forceFailure = false) {
+      if (done) return;
+      done = true;
+      if (timer !== null) clearTimeout(timer);
+      for (const [type, fn] of listeners) window.removeEventListener(type, fn, true);
+      listeners.length = 0;
+      session = null;
+      let ok = false;
+      try {
+        ok = !forceFailure && result === true && isSupportedComposer(root) && location.href === url &&
+          document.hasFocus() && document.activeElement === root &&
+          matchesInsertedParagraphs(root, paste.lines) && selectionAtEnd(root);
+      } catch (_) { /* Never expose clipboard content through exception messages. */ }
+      paste = null;
+      if (!ok) faulted = true;
+    }
+    session = { finish };
+    try {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!event.defaultPrevented) return finish(true);
+      // Deprecated, but verified on the target editor to preserve one Undo/Redo step.
+      // One native edit only: no DOM repair, Selection writes, retries, or synthetic paste.
+      inCommand = true;
+      try { result = document.execCommand("insertText", false, paste.normalized); }
+      finally { inCommand = false; }
+      if (result !== true) return finish(true);
+      // Read-only validation after page processing, or before the next user action.
+      // Exact text equality also detects retained CR, missing text, and duplicate insertion.
+      // beforeinput may be delayed page insertion, so do not end verification on it.
+      const nextAction = e => { if (e.isTrusted) finish(); };
+      for (const type of ["keydown", "compositionstart", "pointerdown", "mousedown",
+        "touchstart", "selectstart", "blur", "pagehide", "popstate", "hashchange"]) {
+        window.addEventListener(type, nextAction, true);
+        listeners.push([type, nextAction]);
+      }
+      timer = setTimeout(() => finish(), 500);
+    } catch (_) {
+      // Cancellation cannot safely be undone. Disable until reload, without retrying.
+      finish(true);
+    }
+  }
+  window.addEventListener("paste", handlePasteCRNormalization, { capture: true });
+}
 })();
