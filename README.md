@@ -30,6 +30,7 @@ A Chrome extension that prevents accidental message sending in ChatGPT.
 ## Changelog
 
 ### 1.3.1
+- Updated configured send shortcuts to use the verified send button in the new ChatGPT composer
 - Updated ChatGPT composer detection for compatibility with the latest ChatGPT Web UI
 - Maintained compatibility with the previous composer structure
 

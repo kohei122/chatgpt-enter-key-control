@@ -152,6 +152,43 @@ function getComposerForTarget(target) {
   return root && target && typeof target.nodeType === "number" && root.contains(target) ? root : null;
 }
 
+function sendFromComposer(composer, target) {
+  if (getChatGPTComposer() !== composer || !document.hasFocus() ||
+      !composer.contains(document.activeElement)) return;
+
+  const form = composer.closest("form");
+  const usesFormSend = composer.id !== "prompt-textarea" ||
+    form?.hasAttribute("data-chatgpt-composer");
+  if (!usesFormSend) {
+    // Preserve the previous ChatGPT keyboard route only for the legacy editor.
+    if (composer.id === "prompt-textarea") dispatchEnter(target, { metaKey: true });
+    return;
+  }
+
+  // Observed new UI: this composer's marked form has exactly one submit button.
+  // Never fall back to a synthetic send when this UI is missing or unavailable.
+  if (!form?.isConnected || !form.hasAttribute("data-chatgpt-composer") ||
+      !form.contains(composer)) return;
+  const submitters = form.querySelectorAll(
+    'button[type="submit"], input[type="submit"], input[type="image"]'
+  );
+  if (submitters.length !== 1) return;
+  const button = submitters[0];
+  if (button.tagName !== "BUTTON" || !button.isConnected || button.form !== form ||
+      button.closest("form") !== form || button.disabled || button.matches(":disabled") ||
+      button.closest('[hidden], [inert], [aria-hidden="true"], [aria-disabled="true"]') ||
+      button.getClientRects().length === 0 || typeof button.click !== "function") return;
+  for (let node = button; node; node = node.parentElement) {
+    const style = window.getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden" ||
+        style.visibility === "collapse" || style.opacity === "0") return;
+  }
+  // Synchronous with the trusted shortcut. Keep native button activation and app handlers.
+  // Do not retry or submit the form separately: a click handler may already have sent.
+  try { button.click(); }
+  catch (_) { /* Fail closed without exposing message content. */ }
+}
+
 function handleKey(event) {
   const isEnter = event.code === "Enter" || event.code === "NumpadEnter";
   const composer = getComposerForTarget(event.target);
@@ -198,8 +235,9 @@ function handleKey(event) {
 
   // Configured shortcut -> send
   if (isSend) {
+    const canSend = event.cancelable && !event.defaultPrevented && !event.repeat && !event.altKey;
     blockEnterEvent(event);
-    dispatchEnter(event.target, { metaKey: true });
+    if (canSend && event.defaultPrevented) sendFromComposer(composer, event.target);
     return;
   }
 

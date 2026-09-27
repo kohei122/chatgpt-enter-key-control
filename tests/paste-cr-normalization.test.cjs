@@ -18,6 +18,37 @@ class Element extends Target {
     this.childNodes = []; this.parentNode = null; this.isConnected = true; this.isContentEditable = true;
     this.classList = { contains: s => (this.attrs.class || '').split(' ').includes(s) };
   }
+  get parentElement() { return this.parentNode?.nodeType === 1 ? this.parentNode : null; }
+  get form() { return this.formOverride !== undefined ? this.formOverride : this.closest('form'); }
+  getClientRects() { return this.noRect ? [] : [{}]; }
+  matches(selector) {
+    return selector.split(',').some(part => {
+      if (part.trim() === ':disabled') return !!this.disabled || !!this.closest('fieldset[disabled]');
+      let ok = true;
+      const rest = part.trim().replace(/#([\w-]+)|\.([\w-]+)|\[([\w-]+)(?:="([^"]*)")?\]/g,
+        (_, id, cls, attr, value) => {
+          ok = ok && (id ? this.id === id : cls ? this.classList.contains(cls)
+            : value === undefined ? this.hasAttribute(attr) : this.getAttribute(attr) === value);
+          return '';
+        });
+      assert.match(rest, /^[a-z]*$/i, `Unsupported fixture selector: ${part}`);
+      return ok && (!rest || this.tagName === rest.toUpperCase());
+    });
+  }
+  closest(selector) {
+    for (let node = this; node; node = node.parentElement) if (node.matches(selector)) return node;
+    return null;
+  }
+  querySelectorAll(selector) {
+    const found = [];
+    const visit = node => {
+      for (const child of node.childNodes || []) {
+        if (child.nodeType === 1 && child.isConnected && child.matches(selector)) found.push(child);
+        visit(child);
+      }
+    };
+    visit(this); return found;
+  }
   get id() { return this.attrs.id || ''; }
   get firstChild() { return this.childNodes[0]; }
   get textContent() { return this.childNodes.map(n => n.textContent).join(''); }
@@ -38,10 +69,11 @@ class Text {
 // Run the entire existing paste/Enter regression suite against both root structures.
 for (const dom of ['legacy', 'modern']) {
 const test = (name, fn) => nodeTest(`${dom}: ${name}`, fn);
-async function setup(extensionEnabled = true, os = 'win', mode = 'shift') {
+async function setup(extensionEnabled = true, os = 'win', mode = 'shift', extraStored = {}) {
   const document = new Target(), window = new Target();
   const html = new Element('HTML'), body = html.append(new Element('BODY'));
-  const root = body.append(new Element('DIV', dom === 'legacy'
+  const form = dom === 'modern' ? body.append(new Element('FORM', { 'data-chatgpt-composer': '', 'data-composer-placement': 'thread' })) : null;
+  const root = (form || body).append(new Element('DIV', dom === 'legacy'
     ? { id: 'prompt-textarea', contenteditable: 'true', class: 'ProseMirror' }
     : { contenteditable: 'true', 'aria-multiline': 'true', dir: 'auto', role: 'textbox',
         spellcheck: 'true', translate: 'no', class: 'ProseMirror',
@@ -52,30 +84,22 @@ async function setup(extensionEnabled = true, os = 'win', mode = 'shift') {
   const timers = new Map(), output = [], changes = [];
   document.documentElement = html; document.activeElement = root; document.visibilityState = 'visible';
   document.hasFocus = () => true; document.getElementById = () => body.childNodes.find(n => n.id === 'prompt-textarea') || null;
-  // Minimal selector engine for ID/class/attribute selectors, independent of composer validity.
-  document.querySelectorAll = selector => {
-    const matches = (node, part) => {
-      if (node.nodeType !== 1 || !node.isConnected) return false;
-      let ok = true;
-      const rest = part.trim().replace(/#([\w-]+)|\.([\w-]+)|\[([\w-]+)(?:="([^"]*)")?\]/g,
-        (_, id, cls, attr, value) => {
-          ok = ok && (id ? node.id === id : cls ? node.classList.contains(cls)
-            : value === undefined ? node.hasAttribute(attr) : node.getAttribute(attr) === value);
-          return '';
-        });
-      assert.equal(rest, '', `Unsupported fixture selector: ${part}`);
-      return ok;
-    };
-    const found = [];
-    const visit = node => {
-      if (selector.split(',').some(part => matches(node, part))) found.push(node);
-      for (const child of node.childNodes || []) visit(child);
-    };
-    visit(html);
-    return found;
-  };
+  document.querySelectorAll = selector => html.querySelectorAll(selector);
+  window.getComputedStyle = node => ({ display: 'block', visibility: 'visible', opacity: '1', ...node.style });
+  const submissions = [], clicks = [];
+  const button = form ? form.append(new Element('BUTTON', { type: 'submit' })) : null;
+  if (button) {
+    // Model button activation, not ChatGPT internals. The submit listener is the app boundary.
+    form.addEventListener('submit', e => submissions.push({ submitter: e.submitter, text: root.textContent }));
+    button.click = () => { clicks.push(button); form.fire('submit', { submitter: button }); };
+    for (let i = 0; i < 3; i++) {
+      const other = form.append(new Element('BUTTON', { type: 'button' }));
+      other.click = () => assert.fail('Unrelated button clicked');
+    }
+    form.submit = form.requestSubmit = () => assert.fail('Direct form submission must not be used');
+  }
   window.getSelection = () => selection;
-  const stored = { enabled: extensionEnabled, mode };
+  const stored = { enabled: extensionEnabled, mode, ...extraStored };
   const context = vm.createContext({ window, document, location: { href: 'https://chatgpt.com/' },
     performance: { now: () => now }, console: { info: (...a) => output.push(a), warn: (...a) => output.push(a) },
     chrome: { runtime: { getPlatformInfo: cb => cb({ os }) }, storage: {
@@ -118,7 +142,7 @@ async function setup(extensionEnabled = true, os = 'win', mode = 'shift') {
   document.execCommand = (command, ui, text) => {
     commands.push({ command, ui, text }); populate(text.split('\n')); return true;
   };
-  return { root, body, document, window, output, context, baseline, event, populate, paste, frame, clean, commands,
+  return { root, body, form, button, submissions, clicks, document, window, output, context, baseline, event, populate, paste, frame, clean, commands,
     resetEmpty() {
       root.childNodes = [];
       const p = root.append(new Element('P', { dir: 'auto' }));
@@ -302,7 +326,11 @@ test('Enter newline and configured shortcuts work across Windows and Mac modes',
     ['win', 'shift', { shiftKey: true }], ['win', 'ctrl', { ctrlKey: true }],
     ['win', 'both', { ctrlKey: true }], ['win', 'combo', { shiftKey: true, ctrlKey: true }],
     ['mac', 'cmd', { metaKey: true }], ['mac', 'shiftCmd', { shiftKey: true, metaKey: true }],
-    ['mac', 'both', { metaKey: true }], ['win', 'cmd', { shiftKey: true }]
+    ['mac', 'both', { metaKey: true }], ['win', 'cmd', { shiftKey: true }],
+    ['win', 'both', { shiftKey: true }], ['win', 'shiftCmd', { shiftKey: true }],
+    ['mac', 'shift', { shiftKey: true }], ['mac', 'ctrl', { ctrlKey: true }],
+    ['mac', 'both', { shiftKey: true }], ['mac', 'both', { ctrlKey: true }],
+    ['mac', 'combo', { shiftKey: true, ctrlKey: true }]
   ];
   for (const [os, mode, modifiers] of cases) {
     const h = await setup(true, os, mode), dispatched = [];
@@ -311,7 +339,14 @@ test('Enter newline and configured shortcuts work across Windows and Mac modes',
     assert.equal(h.event('keydown', { code: 'Enter', keyCode: 13 }).prevented, true);
     assert.equal(dispatched.length, 1); assert.equal(dispatched[0].shiftKey, true);
     assert.equal(h.event('keydown', { code: 'Enter', keyCode: 13, ...modifiers }).prevented, true);
-    assert.equal(dispatched.length, 2); assert.equal(dispatched[1].metaKey, true); h.clean();
+    if (dom === 'legacy') {
+      assert.equal(dispatched.length, 2); assert.equal(dispatched[1].metaKey, true);
+    } else {
+      assert.equal(dispatched.length, 1, 'Send must not synthesize Meta+Enter');
+      assert.equal(h.submissions.length, 1); assert.equal(h.submissions[0].text, 'abcdef');
+      assert.equal(h.submissions[0].submitter, h.button);
+    }
+    h.clean();
   }
 });
 
@@ -341,7 +376,8 @@ test('composer root, child element and text-node events work without localized l
       assert.equal(h.event('keydown', { target, code: 'Enter' }).prevented, true);
       assert.equal(dispatched[0].shiftKey, true);
       assert.equal(h.event('keydown', { target, code: 'Enter', shiftKey: true }).prevented, true);
-      assert.equal(dispatched[1].metaKey, true);
+      if (dom === 'legacy') assert.equal(dispatched[1].metaKey, true);
+      else { assert.equal(dispatched.length, 1); assert.equal(h.submissions.length, 1); }
       h.clean();
     }
   }
@@ -433,4 +469,142 @@ test('legacy URL remains supported and a second composer during paste validation
   h.frame(500); h.body.childNodes = [h.root]; h.resetEmpty();
   assert.equal(h.paste().prevented, undefined); assert.equal(h.commands.length, 1); h.clean();
 });
+
+
+test('send requires one trusted, allowed shortcut with focus and no IME activity', async () => {
+  for (const reason of ['untrusted', 'composing', '229', 'active-ime', 'grace', 'repeat', 'alt',
+    'prevented', 'not-cancelable', 'failed-cancel', 'disabled', 'outside-target', 'outside-focus', 'blurred', 'wrong-shortcut', 'ambiguous']) {
+    const h = await setup(), dispatched = [];
+    h.root.dispatchEvent = e => dispatched.push(e);
+    const extra = { code: 'Enter', shiftKey: true };
+    if (reason === 'untrusted') extra.isTrusted = false;
+    if (reason === 'composing') extra.isComposing = true;
+    if (reason === '229') extra.keyCode = 229;
+    if (reason === 'active-ime') h.event('compositionstart');
+    if (reason === 'grace') { h.event('compositionstart'); h.event('compositionend'); h.frame(79); }
+    if (reason === 'repeat') extra.repeat = true;
+    if (reason === 'alt') extra.altKey = true;
+    if (reason === 'prevented') extra.defaultPrevented = true;
+    if (reason === 'not-cancelable') extra.cancelable = false;
+    if (reason === 'failed-cancel') extra.preventDefault = () => {};
+    if (reason === 'disabled') h.change('enabled', false);
+    if (reason === 'outside-target') extra.target = h.body;
+    if (reason === 'outside-focus') h.document.activeElement = h.body;
+    if (reason === 'blurred') h.document.hasFocus = () => false;
+    if (reason === 'wrong-shortcut') { extra.shiftKey = false; extra.ctrlKey = true; }
+    if (reason === 'ambiguous') h.body.append(new Element('DIV', { ...h.root.attrs }));
+    h.event('keydown', extra);
+    assert.equal(h.submissions.length, 0, reason); assert.equal(dispatched.length, 0, reason); h.clean();
+  }
+});
+
+test('devForceMacPlatform and runtime setting changes preserve the selected send mode', async () => {
+  const h = await setup(true, 'win', 'cmd', { devForceMacPlatform: true }), dispatched = [];
+  h.root.dispatchEvent = e => dispatched.push(e);
+  h.event('keydown', { code: 'Enter', metaKey: true });
+  h.change('mode', 'shiftCmd');
+  h.event('keydown', { code: 'Enter', shiftKey: true, metaKey: true });
+  assert.equal(dom === 'modern' ? h.submissions.length : dispatched.length, 2);
+  h.event('keydown', { code: 'Enter', metaKey: true });
+  assert.equal(dom === 'modern' ? h.submissions.length : dispatched.length, 2);
+  h.clean();
+});
+
+if (dom === 'legacy') {
+  test('legacy ID retains keyboard sending with an unmarked form or markdown attribute', async () => {
+    const h = await setup(), dispatched = [];
+    h.root.attrs['data-composer-markdown'] = '';
+    const form = h.body.append(new Element('FORM'));
+    h.body.childNodes = h.body.childNodes.filter(n => n !== h.root); form.append(h.root);
+    h.root.dispatchEvent = e => dispatched.push(e);
+    h.event('keydown', { code: 'Enter', shiftKey: true });
+    assert.equal(dispatched.length, 1); assert.equal(dispatched[0].metaKey, true); h.clean();
+  });
+}
+
+if (dom === 'modern') {
+  test('verified form button submits once even when the page ignores synthetic Meta+Enter', async () => {
+    const h = await setup(); h.populate(['draft']);
+    const keys = []; h.root.dispatchEvent = e => keys.push(e); // New UI ignores synthetic sends.
+    h.event('keydown', { code: 'Enter' });
+    assert.equal(keys.length, 1); assert.equal(keys[0].shiftKey, true);
+    h.event('keydown', { code: 'Enter', shiftKey: true });
+    h.event('keydown', { code: 'Enter', shiftKey: true, repeat: true });
+    assert.equal(h.clicks.length, 1); assert.equal(h.submissions.length, 1);
+    assert.equal(h.submissions[0].text, 'draft'); assert.equal(keys.length, 1); h.clean();
+  });
+
+  test('missing, ambiguous, disabled, hidden or incorrectly owned send UI fails closed', async () => {
+    const reasons = ['no-form', 'unmarked-form', 'detached-form', 'missing-button', 'duplicate', 'extra-input',
+      'wrong-type', 'detached-button', 'foreign-form', 'nested-form', 'disabled', 'fieldset',
+      'hidden', 'inert', 'aria-hidden', 'aria-disabled', 'ancestor-hidden', 'ancestor-disabled',
+      'no-rect', 'display', 'visibility', 'opacity', 'ancestor-opacity', 'no-click'];
+    for (const reason of reasons) {
+      const h = await setup(), synthetic = [];
+      h.root.dispatchEvent = e => synthetic.push(e);
+      if (reason === 'no-form') { h.form.childNodes = h.form.childNodes.filter(x => x !== h.root); h.body.append(h.root); }
+      if (reason === 'unmarked-form') delete h.form.attrs['data-chatgpt-composer'];
+      if (reason === 'detached-form') h.form.isConnected = false;
+      if (reason === 'missing-button') h.form.childNodes = h.form.childNodes.filter(x => x !== h.button);
+      if (reason === 'duplicate') h.form.append(new Element('BUTTON', { type: 'submit' }));
+      if (reason === 'extra-input') h.form.append(new Element('INPUT', { type: 'submit' }));
+      if (reason === 'wrong-type') h.button.attrs.type = 'button';
+      if (reason === 'detached-button') h.button.isConnected = false;
+      if (reason === 'foreign-form') h.button.formOverride = h.body.append(new Element('FORM'));
+      if (reason === 'nested-form' || reason === 'fieldset') {
+        h.form.childNodes = h.form.childNodes.filter(x => x !== h.button);
+        h.form.append(new Element(reason === 'fieldset' ? 'FIELDSET' : 'FORM', reason === 'fieldset' ? { disabled: '' } : {})).append(h.button);
+      }
+      if (reason === 'disabled') h.button.disabled = true;
+      if (['hidden', 'inert'].includes(reason)) h.button.attrs[reason] = '';
+      if (['aria-hidden', 'aria-disabled'].includes(reason)) h.button.attrs[reason] = 'true';
+      if (reason === 'ancestor-hidden') h.form.attrs.hidden = '';
+      if (reason === 'ancestor-disabled') h.form.attrs['aria-disabled'] = 'true';
+      if (reason === 'no-rect') h.button.noRect = true;
+      if (reason === 'display') h.button.style = { display: 'none' };
+      if (reason === 'visibility') h.button.style = { visibility: 'hidden' };
+      if (reason === 'opacity') h.button.style = { opacity: '0' };
+      if (reason === 'ancestor-opacity') h.form.style = { opacity: '0' };
+      if (reason === 'no-click') h.button.click = undefined;
+      const e = h.event('keydown', { code: 'Enter', shiftKey: true });
+      assert.equal(e.defaultPrevented, true, reason);
+      assert.equal(h.clicks.length, 0, reason); assert.equal(h.submissions.length, 0, reason);
+      assert.equal(synthetic.length, 0, reason); h.clean();
+    }
+  });
+
+  test('button route is label-independent and used even with a legacy root ID in a marked form', async () => {
+    for (const label of [null, '送信', 'Send', '发送', '보내기']) {
+      const h = await setup(); h.root.attrs.id = 'prompt-textarea';
+      if (label) h.button.attrs['aria-label'] = label;
+      h.root.dispatchEvent = () => assert.fail('No synthetic fallback for the verified form UI');
+      const other = h.body.append(new Element('FORM')).append(new Element('BUTTON', { type: 'submit' }));
+      other.click = () => assert.fail('Other form clicked');
+      h.event('keydown', { code: 'Enter', shiftKey: true });
+      assert.equal(h.submissions.length, 1); h.clean();
+    }
+  });
+
+  test('click errors never retry or invoke a second submission route', async () => {
+    const h = await setup(); let clicks = 0;
+    h.root.dispatchEvent = () => assert.fail('No fallback after attempted click');
+    h.button.click = () => { clicks++; h.form.fire('submit', { submitter: h.button }); throw Error('private'); };
+    h.event('keydown', { code: 'Enter', shiftKey: true });
+    h.frame(1000);
+    assert.equal(clicks, 1); assert.equal(h.submissions.length, 1); h.clean();
+  });
+
+  test('two normalized pastes retain one edit each and shortcuts add no editor edits', async () => {
+    const h = await setup();
+    for (let i = 0; i < 2; i++) {
+      h.resetEmpty(); const p = h.root.firstChild;
+      p.attrs = { 'data-empty-paragraph': 'true', 'data-placeholder': 'ChatGPT に聞く', class: 'placeholder' };
+      h.paste('abc\r\ndef'); h.frame(500);
+      assert.equal(h.root.textContent, 'abcdef'); assert.ok(!h.root.textContent.includes('\r'));
+      h.event('keydown', { code: 'Enter', shiftKey: true });
+      assert.equal(h.commands.length, i + 1); assert.equal(h.submissions.length, i + 1); h.clean();
+    }
+    assert.ok(h.commands.every(c => c.command === 'insertText' && c.text === 'abc\ndef'));
+  });
+}
 }
