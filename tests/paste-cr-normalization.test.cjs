@@ -1,4 +1,4 @@
-const { test } = require('node:test');
+const { test: nodeTest } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -35,16 +35,45 @@ class Text {
   contains(n) { return this === n; }
 }
 
+// Run the entire existing paste/Enter regression suite against both root structures.
+for (const dom of ['legacy', 'modern']) {
+const test = (name, fn) => nodeTest(`${dom}: ${name}`, fn);
 async function setup(extensionEnabled = true, os = 'win', mode = 'shift') {
   const document = new Target(), window = new Target();
   const html = new Element('HTML'), body = html.append(new Element('BODY'));
-  const root = body.append(new Element('DIV', { id: 'prompt-textarea', contenteditable: 'true', class: 'ProseMirror' }));
+  const root = body.append(new Element('DIV', dom === 'legacy'
+    ? { id: 'prompt-textarea', contenteditable: 'true', class: 'ProseMirror' }
+    : { contenteditable: 'true', 'aria-multiline': 'true', dir: 'auto', role: 'textbox',
+        spellcheck: 'true', translate: 'no', class: 'ProseMirror',
+        'data-composer-markdown': '', 'data-virtualkeyboard': 'true' }));
   root.append(new Element('P', { dir: 'auto' })).append(new Element('BR', { class: 'ProseMirror-trailingBreak' }));
   let selection = { rangeCount: 1, isCollapsed: true, anchorNode: root.firstChild, focusNode: root.firstChild, anchorOffset: 0, focusOffset: 0 };
   let now = 1000, serial = 0;
   const timers = new Map(), output = [], changes = [];
   document.documentElement = html; document.activeElement = root; document.visibilityState = 'visible';
   document.hasFocus = () => true; document.getElementById = () => body.childNodes.find(n => n.id === 'prompt-textarea') || null;
+  // Minimal selector engine for ID/class/attribute selectors, independent of composer validity.
+  document.querySelectorAll = selector => {
+    const matches = (node, part) => {
+      if (node.nodeType !== 1 || !node.isConnected) return false;
+      let ok = true;
+      const rest = part.trim().replace(/#([\w-]+)|\.([\w-]+)|\[([\w-]+)(?:="([^"]*)")?\]/g,
+        (_, id, cls, attr, value) => {
+          ok = ok && (id ? node.id === id : cls ? node.classList.contains(cls)
+            : value === undefined ? node.hasAttribute(attr) : node.getAttribute(attr) === value);
+          return '';
+        });
+      assert.equal(rest, '', `Unsupported fixture selector: ${part}`);
+      return ok;
+    };
+    const found = [];
+    const visit = node => {
+      if (selector.split(',').some(part => matches(node, part))) found.push(node);
+      for (const child of node.childNodes || []) visit(child);
+    };
+    visit(html);
+    return found;
+  };
   window.getSelection = () => selection;
   const stored = { enabled: extensionEnabled, mode };
   const context = vm.createContext({ window, document, location: { href: 'https://chatgpt.com/' },
@@ -299,3 +328,109 @@ test('IME Enter protection, synthetic event filtering, and modifier blocking are
   assert.equal(dispatched.length, 0);
   h.change('enabled', false); assert.equal(h.event('keydown', { code: 'Enter' }).prevented, undefined); h.clean();
 });
+
+
+test('composer root, child element and text-node events work without localized labels', async () => {
+  for (const label of [null, 'ChatGPT に聞く', 'Ask ChatGPT', 'ChatGPT에게 물어보기', '询问 ChatGPT']) {
+    for (const kind of ['root', 'child', 'text']) {
+      const h = await setup();
+      if (label !== null) h.root.setAttribute('aria-label', label);
+      const target = kind === 'root' ? h.root : kind === 'child' ? h.root.firstChild
+        : h.root.firstChild.append(new Text(''));
+      const dispatched = []; target.dispatchEvent = e => dispatched.push(e);
+      assert.equal(h.event('keydown', { target, code: 'Enter' }).prevented, true);
+      assert.equal(dispatched[0].shiftKey, true);
+      assert.equal(h.event('keydown', { target, code: 'Enter', shiftKey: true }).prevented, true);
+      assert.equal(dispatched[1].metaKey, true);
+      h.clean();
+    }
+  }
+});
+
+test('outside events never control Enter or start composer composition protection', async () => {
+  const h = await setup(), outside = h.body.append(new Element('DIV', { contenteditable: 'true' }));
+  assert.equal(h.event('keydown', { target: outside, code: 'Enter' }).prevented, undefined);
+  h.event('compositionstart', { target: outside });
+  const dispatched = []; h.root.dispatchEvent = e => dispatched.push(e);
+  assert.equal(h.event('keydown', { code: 'Enter' }).prevented, true);
+  assert.equal(dispatched.length, 1);
+  h.paste(); h.frame(500); assert.equal(h.commands.length, 1); h.clean();
+});
+
+test('partial matches, noneditable, detached and wrong-tag roots are excluded', async () => {
+  const attrs = [
+    { contenteditable: 'true' }, { role: 'textbox' }, { class: 'ProseMirror' },
+    { 'data-composer-markdown': '' }, { id: 'prompt-textarea' },
+    ...['contenteditable', 'class', 'role', 'data-composer-markdown'].map(missing => {
+      const a = { contenteditable: 'true', class: 'ProseMirror', role: 'textbox', 'data-composer-markdown': '' };
+      delete a[missing]; return a;
+    })
+  ];
+  for (const attributes of attrs) {
+    const h = await setup(); h.root.attrs = attributes;
+    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, undefined);
+    assertSkipped(h, h.paste());
+  }
+  for (const reason of ['detached', 'inherited-readonly', 'wrong-tag', 'false-editable']) {
+    const h = await setup();
+    if (reason === 'detached') { h.root.isConnected = false; h.body.childNodes = []; }
+    if (reason === 'inherited-readonly') h.root.isContentEditable = false;
+    if (reason === 'wrong-tag') h.root.tagName = 'SPAN';
+    if (reason === 'false-editable') h.root.attrs.contenteditable = 'false';
+    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, undefined);
+    assertSkipped(h, h.paste());
+  }
+});
+
+test('multiple valid candidates are ambiguous even when one is legacy or focused', async () => {
+  for (const attrs of [
+    { id: 'prompt-textarea', class: 'ProseMirror', contenteditable: 'true' },
+    { class: 'ProseMirror', contenteditable: 'true', role: 'textbox', 'data-composer-markdown': '' }
+  ]) {
+    const h = await setup(), other = h.body.append(new Element('DIV', attrs));
+    for (const target of [h.root, h.root.firstChild, other]) {
+      assert.equal(h.event('keydown', { target, code: 'Enter' }).prevented, undefined);
+      h.event('compositionstart', { target });
+    }
+    assertSkipped(h, h.paste());
+    h.body.childNodes = [h.root]; other.isConnected = false;
+    h.root.dispatchEvent = () => {};
+    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, true);
+    h.paste(); h.frame(500); assert.equal(h.commands.length, 1); h.clean();
+  }
+});
+
+test('root matching both selectors is counted once; unrelated editable does not hide composer', async () => {
+  const h = await setup();
+  Object.assign(h.root.attrs, { id: 'prompt-textarea', role: 'textbox', 'data-composer-markdown': '' });
+  h.body.append(new Element('DIV', { contenteditable: 'true', class: 'ProseMirror' }));
+  h.root.dispatchEvent = () => {};
+  assert.equal(h.event('keydown', { code: 'Enter' }).prevented, true);
+  h.paste(); h.frame(500); assert.equal(h.commands.length, 1); h.clean();
+});
+
+test('root and descendant IME Enter protection includes composition and exact grace boundary', async () => {
+  for (const child of [false, true]) {
+    const h = await setup(), target = child ? h.root.firstChild : h.root;
+    const dispatched = []; target.dispatchEvent = e => dispatched.push(e);
+    for (const extra of [{ isComposing: true }, { keyCode: 229 }, { isTrusted: false }]) {
+      assert.equal(h.event('keydown', { target, code: 'Enter', ...extra }).prevented, undefined);
+    }
+    h.event('compositionstart', { target });
+    assert.equal(h.event('keydown', { target, code: 'Enter' }).prevented, undefined);
+    h.event('compositionend', { target }); h.frame(79);
+    assert.equal(h.event('keydown', { target, code: 'Enter' }).prevented, undefined);
+    h.frame(1);
+    assert.equal(h.event('keydown', { target, code: 'Enter' }).prevented, true);
+    assert.equal(dispatched.length, 1); h.clean();
+  }
+});
+
+test('legacy URL remains supported and a second composer during paste validation faults safely', async () => {
+  const h = await setup(); h.context.location.href = 'https://chat.openai.com/c/test';
+  h.paste(); assert.equal(h.commands.length, 1);
+  h.body.append(new Element('DIV', { role: 'textbox', class: 'ProseMirror', contenteditable: 'true', 'data-composer-markdown': '' }));
+  h.frame(500); h.body.childNodes = [h.root]; h.resetEmpty();
+  assert.equal(h.paste().prevented, undefined); assert.equal(h.commands.length, 1); h.clean();
+});
+}

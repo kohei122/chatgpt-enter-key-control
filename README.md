@@ -29,6 +29,10 @@ A Chrome extension that prevents accidental message sending in ChatGPT.
 
 ## Changelog
 
+### 1.3.1
+- Updated ChatGPT composer detection for compatibility with the latest ChatGPT Web UI
+- Maintained compatibility with the previous composer structure
+
 ### 1.3.0
 - Reduce Japanese input issues after pasting multiline plain text into an empty ChatGPT input field
 

@@ -129,9 +129,32 @@ function blockEnterEvent(event) {
   event.stopImmediatePropagation();
 }
 
+// Require a unique, connected editor; never guess between multiple composers.
+const CHATGPT_COMPOSER_SELECTOR =
+  '#prompt-textarea, .ProseMirror[contenteditable="true"][role="textbox"][data-composer-markdown]';
+
+function isValidChatGPTComposer(root) {
+  return root?.nodeType === 1 && root.tagName === "DIV" && root.isConnected &&
+    root.getAttribute("contenteditable") === "true" && root.isContentEditable &&
+    root.classList.contains("ProseMirror") &&
+    (root.id === "prompt-textarea" ||
+      (root.getAttribute("role") === "textbox" && root.hasAttribute("data-composer-markdown")));
+}
+
+function getChatGPTComposer() {
+  const candidates = Array.from(document.querySelectorAll(CHATGPT_COMPOSER_SELECTOR))
+    .filter(isValidChatGPTComposer);
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function getComposerForTarget(target) {
+  const root = getChatGPTComposer();
+  return root && target && typeof target.nodeType === "number" && root.contains(target) ? root : null;
+}
+
 function handleKey(event) {
   const isEnter = event.code === "Enter" || event.code === "NumpadEnter";
-  const isPromptTextarea = event.target && event.target.id === "prompt-textarea";
+  const composer = getComposerForTarget(event.target);
   const inCompositionGraceWindow =
     lastCompositionEndAt > 0 &&
     performance.now() - lastCompositionEndAt < COMPOSITION_END_GRACE_MS;
@@ -140,7 +163,7 @@ function handleKey(event) {
   if (isComposingActive || event.isComposing || event.keyCode === 229 || inCompositionGraceWindow) return;
   if (!settingsLoaded) return;
   if (!settings.enabled) return;
-  if (!isPromptTextarea || !isEnter) return;
+  if (!composer || !isEnter) return;
 
   const mode = sanitizeModeForPlatform(settings.mode, isMacPlatform);
   const isOnlyEnter = !event.ctrlKey && !event.metaKey && !event.shiftKey;
@@ -192,12 +215,12 @@ initPasteCRNormalization();
 document.addEventListener("keydown", handleKey, { capture: true });
 
 document.addEventListener("compositionstart", (event) => {
-  if (!event.target || event.target.id !== "prompt-textarea") return;
+  if (!getComposerForTarget(event.target)) return;
   isComposingActive = true;
 }, { capture: true });
 
 document.addEventListener("compositionend", (event) => {
-  if (!event.target || event.target.id !== "prompt-textarea") return;
+  if (!getComposerForTarget(event.target)) return;
   isComposingActive = false;
   lastCompositionEndAt = performance.now();
 }, { capture: true });
@@ -212,27 +235,21 @@ function initPasteCRNormalization() {
   });
 
   // Independent paste safeguards; preserve the existing Enter composition handling.
-  const inComposer = target => {
-    const root = document.getElementById("prompt-textarea");
-    return root && target && root.contains(target);
-  };
   for (const type of ["compositionstart", "compositionupdate", "compositionend"]) {
     window.addEventListener(type, event => {
-      if (!inComposer(event.target)) return;
+      if (!getComposerForTarget(event.target)) return;
       composing = type !== "compositionend";
       imeAt = performance.now();
     }, true);
   }
   window.addEventListener("keydown", event => {
-    if (inComposer(event.target) && (event.isComposing || event.keyCode === 229)) {
+    if (getComposerForTarget(event.target) && (event.isComposing || event.keyCode === 229)) {
       imeAt = performance.now();
     }
   }, true);
 
   function isSupportedComposer(root) {
-    return root?.nodeType === 1 && root.tagName === "DIV" && root.isConnected &&
-      root.getAttribute("contenteditable") === "true" && root.isContentEditable &&
-      root.classList.contains("ProseMirror") && document.getElementById("prompt-textarea") === root;
+    return isValidChatGPTComposer(root) && getChatGPTComposer() === root;
   }
   function isExpectedEmptyComposer(root) {
     if (root.textContent !== "" || root.childNodes.length !== 1) return false;
@@ -295,8 +312,8 @@ function initPasteCRNormalization() {
     if (faulted || !settingsLoaded || !settings.enabled) return;
     if (!event.isTrusted || !event.cancelable || event.defaultPrevented) return;
     if (!/^https:\/\/(chatgpt\.com|chat\.openai\.com)(\/|$)/.test(location.href)) return;
-    const root = document.getElementById("prompt-textarea");
-    if (!isSupportedComposer(root) || !root.contains(event.target)) return;
+    const root = getComposerForTarget(event.target);
+    if (!root) return;
     if (composing || isComposingActive || performance.now() - imeAt < COMPOSITION_END_GRACE_MS ||
         (lastCompositionEndAt > 0 && performance.now() - lastCompositionEndAt < COMPOSITION_END_GRACE_MS)) return;
     if (!isExpectedEmptyComposer(root) || !document.hasFocus() || document.activeElement !== root ||
