@@ -141,9 +141,20 @@ function isValidChatGPTComposer(root) {
       (root.getAttribute("role") === "textbox" && root.hasAttribute("data-composer-markdown")));
 }
 
+function isDisplayedChatGPTComposer(root) {
+  if (!root.isConnected || root.closest('[hidden], [inert], [aria-hidden="true"]') ||
+      root.getClientRects().length === 0) return false;
+  const rect = root.getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) return false;
+  const style = window.getComputedStyle(root);
+  return style.display !== "none" && style.visibility !== "hidden" &&
+    style.visibility !== "collapse";
+}
+
 function getChatGPTComposer() {
   const candidates = Array.from(document.querySelectorAll(CHATGPT_COMPOSER_SELECTOR))
-    .filter(isValidChatGPTComposer);
+    .filter(isValidChatGPTComposer)
+    .filter(isDisplayedChatGPTComposer);
   return candidates.length === 1 ? candidates[0] : null;
 }
 

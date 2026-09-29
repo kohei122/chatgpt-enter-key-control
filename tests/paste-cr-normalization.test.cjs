@@ -20,7 +20,8 @@ class Element extends Target {
   }
   get parentElement() { return this.parentNode?.nodeType === 1 ? this.parentNode : null; }
   get form() { return this.formOverride !== undefined ? this.formOverride : this.closest('form'); }
-  getClientRects() { return this.noRect ? [] : [{}]; }
+  getClientRects() { return this.noRect ? [] : [this.getBoundingClientRect()]; }
+  getBoundingClientRect() { return { x: 863, y: 1210, width: 524, height: 36, ...this.rect }; }
   matches(selector) {
     return selector.split(',').some(part => {
       if (part.trim() === ':disabled') return !!this.disabled || !!this.closest('fieldset[disabled]');
@@ -567,7 +568,7 @@ if (dom === 'modern') {
       if (reason === 'ancestor-opacity') h.form.style = { opacity: '0' };
       if (reason === 'no-click') h.button.click = undefined;
       const e = h.event('keydown', { code: 'Enter', shiftKey: true });
-      assert.equal(e.defaultPrevented, true, reason);
+      assert.equal(e.defaultPrevented, reason !== 'ancestor-hidden', reason);
       assert.equal(h.clicks.length, 0, reason); assert.equal(h.submissions.length, 0, reason);
       assert.equal(synthetic.length, 0, reason); h.clean();
     }
@@ -607,4 +608,83 @@ if (dom === 'modern') {
     assert.ok(h.commands.every(c => c.command === 'insertText' && c.text === 'abc\ndef'));
   });
 }
+
+
+test('visible composer remains usable with a connected zero-size stale composer', async () => {
+  for (const staleFirst of [false, true]) {
+    const h = await setup(), stale = new Element('DIV', { ...h.root.attrs });
+    stale.rect = { x: 0, y: 0, width: 0, height: 0 };
+    const staleForm = new Element('FORM', { 'data-chatgpt-composer': '' }); staleForm.append(stale);
+    if (staleFirst) { staleForm.parentNode = h.body; h.body.childNodes.unshift(staleForm); }
+    else h.body.append(staleForm);
+    const dispatched = []; h.root.dispatchEvent = e => dispatched.push(e);
+    assert.equal(h.event('keydown', { code: 'Enter', target: stale }).prevented, undefined);
+    h.event('compositionstart', { target: stale }); // Hidden editor must not block active editor's IME.
+    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, true);
+    assert.equal(dispatched[0].shiftKey, true);
+    assert.equal(h.event('keydown', { code: 'Enter', shiftKey: true }).prevented, true);
+    assert.equal(dom === 'modern' ? h.submissions.length : dispatched.length - 1, 1);
+    h.event('keydown', { code: 'Enter', shiftKey: true, repeat: true });
+    assert.equal(dom === 'modern' ? h.submissions.length : dispatched.length - 1, 1);
+    h.event('compositionstart');
+    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, undefined);
+    h.event('compositionend'); h.frame(79);
+    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, undefined);
+    h.frame(1);
+    for (let i = 0; i < 2; i++) {
+      h.resetEmpty(); h.paste(); h.frame(500);
+      assert.equal(h.commands.length, i + 1); assert.equal(h.root.textContent, 'abcdef'); h.clean();
+    }
+    // Candidate changes must be evaluated live, even with focus still on the original root.
+    stale.rect = { width: 524, height: 36 };
+    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, undefined);
+    stale.rect = { width: 0, height: 0 };
+    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, true); h.clean();
+  }
+});
+
+test('non-displayed composers are excluded from Enter, send, IME and paste handling', async () => {
+  for (const reason of ['zero', 'width-zero', 'height-zero', 'no-rect', 'disconnected',
+    'hidden', 'inert', 'aria-hidden', 'ancestor-hidden', 'ancestor-inert', 'ancestor-aria-hidden',
+    'visibility-hidden', 'visibility-collapse', 'display-none', 'no-composer']) {
+    const h = await setup(), dispatched = [];
+    h.root.dispatchEvent = e => dispatched.push(e);
+    if (reason === 'zero') h.root.rect = { width: 0, height: 0 };
+    if (reason === 'width-zero') h.root.rect = { width: 0 };
+    if (reason === 'height-zero') h.root.rect = { height: 0 };
+    if (reason === 'no-rect') h.root.noRect = true;
+    if (reason === 'disconnected') h.root.isConnected = false;
+    if (['hidden', 'inert'].includes(reason)) h.root.attrs[reason] = '';
+    if (reason === 'aria-hidden') h.root.attrs['aria-hidden'] = 'true';
+    if (reason.startsWith('ancestor-')) {
+      const name = reason.slice('ancestor-'.length);
+      h.body.attrs[name] = name === 'aria-hidden' ? 'true' : '';
+    }
+    if (reason === 'visibility-hidden') h.root.style = { visibility: 'hidden' };
+    if (reason === 'visibility-collapse') h.root.style = { visibility: 'collapse' };
+    if (reason === 'display-none') h.root.style = { display: 'none' };
+    if (reason === 'no-composer') h.body.childNodes = [];
+    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, undefined, reason);
+    assert.equal(h.event('keydown', { code: 'Enter', shiftKey: true }).prevented, undefined, reason);
+    h.event('compositionstart'); assertSkipped(h, h.paste());
+    assert.equal(dispatched.length, 0); assert.equal(h.submissions.length, 0);
+    // Recover without compositionend: the excluded editor must not set IME state.
+    h.root.rect = {}; h.root.noRect = false; h.root.isConnected = true; h.root.style = {};
+    for (const name of ['hidden', 'inert', 'aria-hidden']) { delete h.root.attrs[name]; delete h.body.attrs[name]; }
+    if (reason === 'no-composer') h.body.append(h.form || h.root);
+    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, true, reason); h.clean();
+  }
+});
+
+test('display eligibility has no fixed position, minimum size, focus or ancestor opacity heuristic', async () => {
+  const h = await setup(), dispatched = [];
+  h.root.rect = { x: -1000, y: 10000, width: 0.5, height: 0.5 };
+  h.root.attrs['aria-hidden'] = 'false';
+  h.body.style = { visibility: 'hidden', opacity: '0.2' };
+  h.root.style = { visibility: 'visible' }; // A descendant may override inherited visibility.
+  h.document.activeElement = h.body;
+  h.root.dispatchEvent = e => dispatched.push(e);
+  assert.equal(h.event('keydown', { code: 'Enter' }).prevented, true);
+  assert.equal(dispatched.length, 1); h.clean();
+});
 }
