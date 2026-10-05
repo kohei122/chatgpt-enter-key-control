@@ -67,13 +67,16 @@ class Text {
   contains(n) { return this === n; }
 }
 
-// Run the entire existing paste/Enter regression suite against both root structures.
-for (const dom of ['legacy', 'modern']) {
+// Run all regressions against legacy, old marked forms, and current thread forms.
+// Normal chat and Work share the same observed thread form attributes.
+for (const dom of ['legacy', 'modern', 'thread-chat', 'thread-work']) {
 const test = (name, fn) => nodeTest(`${dom}: ${name}`, fn);
 async function setup(extensionEnabled = true, os = 'win', mode = 'shift', extraStored = {}) {
   const document = new Target(), window = new Target();
   const html = new Element('HTML'), body = html.append(new Element('BODY'));
-  const form = dom === 'modern' ? body.append(new Element('FORM', { 'data-chatgpt-composer': '', 'data-composer-placement': 'thread' })) : null;
+  const form = dom !== 'legacy' ? body.append(new Element('FORM', dom === 'modern'
+    ? { 'data-chatgpt-composer': '', 'data-composer-placement': 'thread' }
+    : { 'data-composer-placement': 'thread', 'data-thread-find-composer': 'true' })) : null;
   const root = (form || body).append(new Element('DIV', dom === 'legacy'
     ? { id: 'prompt-textarea', contenteditable: 'true', class: 'ProseMirror' }
     : { contenteditable: 'true', 'aria-multiline': 'true', dir: 'auto', role: 'textbox',
@@ -505,9 +508,9 @@ test('devForceMacPlatform and runtime setting changes preserve the selected send
   h.event('keydown', { code: 'Enter', metaKey: true });
   h.change('mode', 'shiftCmd');
   h.event('keydown', { code: 'Enter', shiftKey: true, metaKey: true });
-  assert.equal(dom === 'modern' ? h.submissions.length : dispatched.length, 2);
+  assert.equal(dom !== 'legacy' ? h.submissions.length : dispatched.length, 2);
   h.event('keydown', { code: 'Enter', metaKey: true });
-  assert.equal(dom === 'modern' ? h.submissions.length : dispatched.length, 2);
+  assert.equal(dom !== 'legacy' ? h.submissions.length : dispatched.length, 2);
   h.clean();
 });
 
@@ -523,7 +526,27 @@ if (dom === 'legacy') {
   });
 }
 
-if (dom === 'modern') {
+if (dom !== 'legacy') {
+  test('form recognition requires the old marker or both exact thread attribute values', async () => {
+    const cases = [
+      [{ 'data-chatgpt-composer': '' }, true],
+      [{ 'data-composer-placement': 'thread', 'data-thread-find-composer': 'true' }, true],
+      [{ 'data-composer-placement': 'thread' }, false],
+      [{ 'data-thread-find-composer': 'true' }, false],
+      [{}, false],
+      [{ 'data-composer-placement': 'other', 'data-thread-find-composer': 'true' }, false],
+      [{ 'data-composer-placement': 'thread', 'data-thread-find-composer': 'false' }, false],
+      [{ 'data-composer-placement': 'thread', 'data-thread-find-composer': '' }, false]
+    ];
+    for (const [attrs, accepted] of cases) {
+      const h = await setup(); h.form.attrs = attrs;
+      h.root.dispatchEvent = () => assert.fail('No synthetic fallback for modern composers');
+      h.event('keydown', { code: 'Enter', shiftKey: true });
+      assert.equal(h.clicks.length, accepted ? 1 : 0, JSON.stringify(attrs));
+      assert.equal(h.submissions.length, accepted ? 1 : 0); h.clean();
+    }
+  });
+
   test('verified form button submits once even when the page ignores synthetic Meta+Enter', async () => {
     const h = await setup(); h.populate(['draft']);
     const keys = []; h.root.dispatchEvent = e => keys.push(e); // New UI ignores synthetic sends.
@@ -537,19 +560,22 @@ if (dom === 'modern') {
 
   test('missing, ambiguous, disabled, hidden or incorrectly owned send UI fails closed', async () => {
     const reasons = ['no-form', 'unmarked-form', 'detached-form', 'missing-button', 'duplicate', 'extra-input',
-      'wrong-type', 'detached-button', 'foreign-form', 'nested-form', 'disabled', 'fieldset',
+      'wrong-type', 'input-submit', 'input-image', 'detached-button', 'foreign-form', 'nested-form', 'disabled', 'fieldset',
       'hidden', 'inert', 'aria-hidden', 'aria-disabled', 'ancestor-hidden', 'ancestor-disabled',
       'no-rect', 'display', 'visibility', 'opacity', 'ancestor-opacity', 'no-click'];
     for (const reason of reasons) {
       const h = await setup(), synthetic = [];
       h.root.dispatchEvent = e => synthetic.push(e);
       if (reason === 'no-form') { h.form.childNodes = h.form.childNodes.filter(x => x !== h.root); h.body.append(h.root); }
-      if (reason === 'unmarked-form') delete h.form.attrs['data-chatgpt-composer'];
+      if (reason === 'unmarked-form') h.form.attrs = {};
       if (reason === 'detached-form') h.form.isConnected = false;
       if (reason === 'missing-button') h.form.childNodes = h.form.childNodes.filter(x => x !== h.button);
       if (reason === 'duplicate') h.form.append(new Element('BUTTON', { type: 'submit' }));
       if (reason === 'extra-input') h.form.append(new Element('INPUT', { type: 'submit' }));
       if (reason === 'wrong-type') h.button.attrs.type = 'button';
+      if (reason === 'input-submit' || reason === 'input-image') {
+        h.button.tagName = 'INPUT'; h.button.attrs.type = reason === 'input-image' ? 'image' : 'submit';
+      }
       if (reason === 'detached-button') h.button.isConnected = false;
       if (reason === 'foreign-form') h.button.formOverride = h.body.append(new Element('FORM'));
       if (reason === 'nested-form' || reason === 'fieldset') {
@@ -577,6 +603,7 @@ if (dom === 'modern') {
   test('button route is label-independent and used even with a legacy root ID in a marked form', async () => {
     for (const label of [null, '送信', 'Send', '发送', '보내기']) {
       const h = await setup(); h.root.attrs.id = 'prompt-textarea';
+      h.form.attrs['data-chatgpt-composer'] = ''; // Existing marked legacy-ID route.
       if (label) h.button.attrs['aria-label'] = label;
       h.root.dispatchEvent = () => assert.fail('No synthetic fallback for the verified form UI');
       const other = h.body.append(new Element('FORM')).append(new Element('BUTTON', { type: 'submit' }));
@@ -623,9 +650,9 @@ test('visible composer remains usable with a connected zero-size stale composer'
     assert.equal(h.event('keydown', { code: 'Enter' }).prevented, true);
     assert.equal(dispatched[0].shiftKey, true);
     assert.equal(h.event('keydown', { code: 'Enter', shiftKey: true }).prevented, true);
-    assert.equal(dom === 'modern' ? h.submissions.length : dispatched.length - 1, 1);
+    assert.equal(dom !== 'legacy' ? h.submissions.length : dispatched.length - 1, 1);
     h.event('keydown', { code: 'Enter', shiftKey: true, repeat: true });
-    assert.equal(dom === 'modern' ? h.submissions.length : dispatched.length - 1, 1);
+    assert.equal(dom !== 'legacy' ? h.submissions.length : dispatched.length - 1, 1);
     h.event('compositionstart');
     assert.equal(h.event('keydown', { code: 'Enter' }).prevented, undefined);
     h.event('compositionend'); h.frame(79);

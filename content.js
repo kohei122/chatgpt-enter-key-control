@@ -163,6 +163,12 @@ function getComposerForTarget(target) {
   return root && target && typeof target.nodeType === "number" && root.contains(target) ? root : null;
 }
 
+function isRecognizedChatGPTComposerForm(form) {
+  return form?.hasAttribute("data-chatgpt-composer") ||
+    (form?.getAttribute("data-composer-placement") === "thread" &&
+      form?.getAttribute("data-thread-find-composer") === "true");
+}
+
 function sendFromComposer(composer, target) {
   if (getChatGPTComposer() !== composer || !document.hasFocus() ||
       !composer.contains(document.activeElement)) return;
@@ -178,7 +184,7 @@ function sendFromComposer(composer, target) {
 
   // Observed new UI: this composer's marked form has exactly one submit button.
   // Never fall back to a synthetic send when this UI is missing or unavailable.
-  if (!form?.isConnected || !form.hasAttribute("data-chatgpt-composer") ||
+  if (!form?.isConnected || !isRecognizedChatGPTComposerForm(form) ||
       !form.contains(composer)) return;
   const submitters = form.querySelectorAll(
     'button[type="submit"], input[type="submit"], input[type="image"]'
