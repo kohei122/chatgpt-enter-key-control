@@ -1,0 +1,4 @@
+body { font: 16px sans-serif; margin: 24px; }
+.ProseMirror { border: 1px solid #777; width: 420px; min-height: 70px; padding: 8px; white-space: pre-wrap; }
+form { margin-bottom: 20px; }
+.stale { width: 0; height: 0; min-height: 0; padding: 0; border: 0; overflow: hidden; }

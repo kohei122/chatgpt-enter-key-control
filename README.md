@@ -66,3 +66,8 @@ A Chrome extension that prevents accidental message sending in ChatGPT.
 ## Developer
 
 Developed by Marushin
+
+## Development tests
+
+Unit tests: `npm test`. Browser integration tests: `npm run test:browser`.
+Run both with `npm run test:all`. See [Playwright Mock DOM tests](tests/playwright/README.md) for setup, fixtures, and coverage limits.
