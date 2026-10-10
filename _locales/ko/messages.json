@@ -46,5 +46,8 @@
   },
   "otherExtensions": {
     "message": "Chrome 확장 보기"
+  },
+  "detailsLabel": {
+    "message": "상세 설정"
   }
 }

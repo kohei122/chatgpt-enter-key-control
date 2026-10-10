@@ -46,5 +46,8 @@
   },
   "otherExtensions": {
     "message": "查看 Chrome 扩展"
+  },
+  "detailsLabel": {
+    "message": "详细设置"
   }
 }

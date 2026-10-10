@@ -46,5 +46,8 @@
   },
   "otherExtensions": {
     "message": "Ver extensiones de Chrome"
+  },
+  "detailsLabel": {
+    "message": "Detalles"
   }
 }

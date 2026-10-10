@@ -15,7 +15,7 @@ npm run test:all
 ```
 
 - `npm test` / `npm run test:unit`: 従来の単体テストのみ。
-- `npm run test:browser`: 本ファイル群のブラウザテスト19件。
+- `npm run test:browser`: composer回帰19件とpopup回帰7件、計26件。
 - `npm run test:all`: 単体、ブラウザの順に実行。失敗は非0で終了。
 - インストール時のみnpm/CDN接続が必要。テスト実行はlocalhostのみ。
 - Linux CIでは `npx playwright install --with-deps chromium` を使用できる。
@@ -92,6 +92,13 @@ no/multiple/unknown submitter/form3件、複数composer1件、staleのみ1件、
 disabled/hidden/aria-disabled/opacity=0 submitter4件、
 composition1件、不許可shortcut1件、拡張無効negative control1件。
 
+popup.spec.cjsは7言語ごとに実際の拡張popup.htmlを220px幅のタブで開く。
+詳細ラベルと矢印、初期折りたたみ・展開・再読み込み時の状態、言語切替と保持、
+manifest由来のversion、フッターの同一行・右寄せ・重なりや切れのない表示、
+ON/OFFと送信設定の保存・再読み込み、設定後のhome改行・送信を確認する。
+リンク先はchrome.tabs.createの呼び出しを観測し、外部ストアへは移動しない。
+実Chromeツールバーのpopupウィンドウそのものの自動化ではない。
+
 Windows向けshift・ctrl・both・comboを実ブラウザで確認する。
 Mac向けcmd・shiftCmd、プラットフォーム切替、keyCode 229、IME猶予80ms境界、
 paste normalizationの厳密条件は既存単体テストが担当する。
@@ -106,7 +113,8 @@ DOM変更を観測したら、個人データを含まない最小fixtureを追�
 
 JS例外・console error・想定外通信を検出して失敗させる。
 固定sleep・リトライは使わず、状態・locator待ちで同期する。
-screenshots/video/tracesは無効、生成結果とnode_modulesは.gitignoreで除外する。
+自動screenshots/video/tracesは無効。popup試験のみ各言語の表示画像を明示的に
+test-resultsへ保存する。生成結果とnode_modulesは.gitignoreで除外する。
 
 ## 回帰検出の確認
 

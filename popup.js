@@ -45,6 +45,7 @@ const secondaryContent = document.getElementById("secondary-content");
 const otherExtensionsLink = document.getElementById("other-extensions-link");
 const languageSettingLabel = document.getElementById("language-setting-label");
 const languageSelect = document.getElementById("language-select");
+const i18nElements = document.querySelectorAll("[data-i18n]");
 let isMacPlatform = false;
 let currentForcedMessages = null;
 
@@ -100,8 +101,16 @@ function applyPopupTexts(forcedMessages) {
   }
 
   if (appVersion) {
-    appVersion.textContent = `${getMessage("versionLabel", forcedMessages)} v${chrome.runtime.getManifest().version}`;
+    appVersion.textContent = `v${chrome.runtime.getManifest().version}`;
   }
+
+  i18nElements.forEach((element) => {
+    const key = element.getAttribute("data-i18n");
+    if (!key) return;
+
+    const message = getMessage(key, forcedMessages);
+    if (message) element.textContent = message;
+  });
 }
 
 function getModeOptionConfigs(isMac) {

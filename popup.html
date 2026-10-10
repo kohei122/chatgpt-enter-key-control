@@ -65,7 +65,7 @@
     }
 
     .secondary-content.open {
-      max-height: 180px;
+      max-height: none;
       opacity: 1;
       margin-top: 8px;
     }
@@ -98,7 +98,8 @@
 
     .other-extensions {
       display: block;
-      margin-top: 8px;
+      min-width: 0;
+      overflow-wrap: anywhere;
       font-size: 12px;
       color: #1a73e8;
       text-decoration: none;
@@ -110,10 +111,20 @@
     }
 
     .version-row {
-      margin-top: 8px;
+      margin-left: auto;
+      white-space: nowrap;
       font-size: 12px;
       color: #444;
       line-height: 1.4;
+    }
+
+    .popup-footer {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 6px 12px;
+      margin-top: 10px;
     }
   </style>
 </head>
@@ -136,7 +147,7 @@
   <hr>
 
   <div class="secondary-toggle-wrap" id="secondary-toggle-wrap">
-    <button id="secondary-toggle" class="secondary-toggle" type="button" aria-expanded="false" aria-label="Open secondary settings">&#9660;</button>
+    <button id="secondary-toggle" class="secondary-toggle" type="button" aria-expanded="false"><span data-i18n="detailsLabel"></span> <span aria-hidden="true">▼</span></button>
   </div>
 
   <div class="secondary-content" id="secondary-content">
@@ -154,9 +165,10 @@
       </select>
     </div>
 
-    <a class="other-extensions" id="other-extensions-link" href="#"></a>
-
-    <div class="version-row" id="app-version">v</div>
+    <div class="popup-footer">
+      <a class="other-extensions" id="other-extensions-link" href="#"></a>
+      <div class="version-row" id="app-version">v</div>
+    </div>
   </div>
 
   <script src="popup.js"></script>

@@ -46,5 +46,8 @@
   },
   "otherExtensions": {
     "message": "Chrome拡張を見る"
+  },
+  "detailsLabel": {
+    "message": "詳細"
   }
 }
