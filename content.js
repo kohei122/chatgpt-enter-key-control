@@ -164,9 +164,10 @@ function getComposerForTarget(target) {
 }
 
 function isRecognizedChatGPTComposerForm(form) {
+  // Allow only observed placements; keep the second marker mandatory for new UI.
   return form?.hasAttribute("data-chatgpt-composer") ||
-    (form?.getAttribute("data-composer-placement") === "thread" &&
-      form?.getAttribute("data-thread-find-composer") === "true");
+    (form?.getAttribute("data-thread-find-composer") === "true" &&
+      ["thread", "home"].includes(form?.getAttribute("data-composer-placement")));
 }
 
 function sendFromComposer(composer, target) {

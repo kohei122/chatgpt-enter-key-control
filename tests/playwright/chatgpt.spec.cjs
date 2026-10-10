@@ -13,7 +13,7 @@ async function newline(page, editor) {
   expect(await page.evaluate(() => window.__newlineCount)).toBe(1);
 }
 
-for (const name of ['old-composer', 'current-composer', 'stale-composer']) {
+for (const name of ['old-composer', 'current-composer', 'home-composer', 'stale-composer']) {
   test(name + ': Enter newline, Shift+Enter sends exactly once', async ({ harness }) => {
     const { page, open } = harness;
     await open(name);

@@ -67,16 +67,16 @@ class Text {
   contains(n) { return this === n; }
 }
 
-// Run all regressions against legacy, old marked forms, and current thread forms.
-// Normal chat and Work share the same observed thread form attributes.
-for (const dom of ['legacy', 'modern', 'thread-chat', 'thread-work']) {
+// Keep all existing DOM regressions and add the Work home form observed on 2026-10-08.
+for (const dom of ['legacy', 'modern', 'thread-chat', 'thread-work', 'home-work']) {
 const test = (name, fn) => nodeTest(`${dom}: ${name}`, fn);
 async function setup(extensionEnabled = true, os = 'win', mode = 'shift', extraStored = {}) {
   const document = new Target(), window = new Target();
   const html = new Element('HTML'), body = html.append(new Element('BODY'));
   const form = dom !== 'legacy' ? body.append(new Element('FORM', dom === 'modern'
     ? { 'data-chatgpt-composer': '', 'data-composer-placement': 'thread' }
-    : { 'data-composer-placement': 'thread', 'data-thread-find-composer': 'true' })) : null;
+    : { 'data-composer-placement': dom === 'home-work' ? 'home' : 'thread',
+        'data-thread-find-composer': 'true' })) : null;
   const root = (form || body).append(new Element('DIV', dom === 'legacy'
     ? { id: 'prompt-textarea', contenteditable: 'true', class: 'ProseMirror' }
     : { contenteditable: 'true', 'aria-multiline': 'true', dir: 'auto', role: 'textbox',
@@ -527,16 +527,25 @@ if (dom === 'legacy') {
 }
 
 if (dom !== 'legacy') {
-  test('form recognition requires the old marker or both exact thread attribute values', async () => {
+  test('form recognition requires the old marker or both exact thread/home attribute values', async () => {
     const cases = [
       [{ 'data-chatgpt-composer': '' }, true],
       [{ 'data-composer-placement': 'thread', 'data-thread-find-composer': 'true' }, true],
+      [{ 'data-composer-placement': 'home', 'data-thread-find-composer': 'true' }, true],
       [{ 'data-composer-placement': 'thread' }, false],
+      [{ 'data-composer-placement': 'home' }, false],
       [{ 'data-thread-find-composer': 'true' }, false],
       [{}, false],
       [{ 'data-composer-placement': 'other', 'data-thread-find-composer': 'true' }, false],
       [{ 'data-composer-placement': 'thread', 'data-thread-find-composer': 'false' }, false],
-      [{ 'data-composer-placement': 'thread', 'data-thread-find-composer': '' }, false]
+      [{ 'data-composer-placement': 'thread', 'data-thread-find-composer': '' }, false],
+      [{ 'data-composer-placement': 'home', 'data-thread-find-composer': 'false' }, false],
+      [{ 'data-composer-placement': 'home', 'data-thread-find-composer': '' }, false],
+      [{ 'data-composer-placement': 'home', 'data-thread-find-composer': 'TRUE' }, false],
+      [{ 'data-composer-placement': 'home', 'data-thread-find-composer': ' true ' }, false],
+      [{ 'data-composer-placement': 'HOME', 'data-thread-find-composer': 'true' }, false],
+      [{ 'data-composer-placement': ' home ', 'data-thread-find-composer': 'true' }, false],
+      [{ 'data-composer-placement': '', 'data-thread-find-composer': 'true' }, false]
     ];
     for (const [attrs, accepted] of cases) {
       const h = await setup(); h.form.attrs = attrs;

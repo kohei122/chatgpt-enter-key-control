@@ -2,7 +2,8 @@
 
 ## 実行
 
-Node.js 20以上。既存単体テストはNode標準 `node:test` と `vm` による127件で、変更していません。
+Node.js 20以上。単体テストはNode標準 `node:test` と `vm` による160件です。
+既存127件を維持し、Workのhome formでも同じ回帰テスト33件を実行します。
 以前はpackage.jsonがなく、直接Nodeで実行していました。
 
 ```sh
@@ -14,7 +15,7 @@ npm run test:all
 ```
 
 - `npm test` / `npm run test:unit`: 従来の単体テストのみ。
-- `npm run test:browser`: 本ファイル群のブラウザテスト18件。
+- `npm run test:browser`: 本ファイル群のブラウザテスト19件。
 - `npm run test:all`: 単体、ブラウザの順に実行。失敗は非0で終了。
 - インストール時のみnpm/CDN接続が必要。テスト実行はlocalhostのみ。
 - Linux CIでは `npx playwright install --with-deps chromium` を使用できる。
@@ -59,6 +60,7 @@ data-composer-markdownで、送信ボタンはform内のbutton[type=submit]。
 | --- | --- |
 | old-composer.html | 旧data-chatgpt-composer付きform。Enter改行、Shift+Enterクリック1回 |
 | current-composer.html | data-composer-placement=threadとdata-thread-find-composer=trueの現form。同上 |
+| home-composer.html | 2026-10-08のWork実測に基づくhomeとdata-thread-find-composer=trueのform。旧属性なし。Enter改行、Shift+Enterクリック1回 |
 | stale-composer.html | 0×0の残存editorと有効editor。有効な一候補を使って送信1回 |
 | stale-only.html | 0×0 editorのみ。実際にfocusしてtrusted shortcutを押しても送信0回 |
 | multiple-composers.html | 可視editor二つ。どちらをfocusしても曖昧として拡張から送信しない |
@@ -85,7 +87,7 @@ composer自体が曖昧・非表示なら、既存実装はイベントへ介入
 
 ## カバレッジと限界
 
-18件: 正常旧/現/stale混在3件、ctrl/both/combo3件、
+19件: 正常旧/thread/home/stale混在4件、ctrl/both/combo3件、
 no/multiple/unknown submitter/form3件、複数composer1件、staleのみ1件、
 disabled/hidden/aria-disabled/opacity=0 submitter4件、
 composition1件、不許可shortcut1件、拡張無効negative control1件。
@@ -117,6 +119,54 @@ screenshots/video/tracesは無効、生成結果とnode_modulesは.gitignoreで�
 - 現HEAD 1.3.3: 全18件PASS。
 
 これにより、目的の「改行はできるが新DOMでshortcut送信できない」回帰を検出できる。
+
+## Work home formの回帰と保守方針（2026-10-10）
+
+2026-10-08のユーザー実測では、Workのformは旧マーカーがなく、
+`data-composer-placement="home"` と `data-thread-find-composer="true"` を持つ。
+composer検出とEnter改行は成立するが、従来のform判定はthreadだけを許可するため、
+送信ショートカットでfail closedになる。
+
+実装を変更する前に、次の追加テストを実行し、いずれも改行検証を通過した後、
+送信回数が期待1・実際0で失敗することを確認した。
+
+```sh
+node --test --test-name-pattern="home-work: verified form button" tests/paste-cr-normalization.test.cjs
+node node_modules/@playwright/test/cli.js test --grep home-composer
+```
+
+修正は既存のisRecognizedChatGPTComposerFormにhomeを追加するだけ。
+旧属性、またはthread/homeと第二属性の厳密なANDを要求する。
+単体テストはhomeでも全回帰を実行し、属性不足・false・空値・大文字・前後空白・
+未知placement、composerの曖昧性と0×0候補、submitterの一意性・所属・表示・有効性、
+フォーカス、IME、repeat、各送信設定、paste、クリック例外時の再送禁止を確認する。
+aria-labelによる判定は追加しない。
+
+コードとfixtureの調査では、placement依存は既存ヘルパー1か所に集約されている。
+将来は第二属性と構造検査だけにできる可能性があるが、第二属性が他のformでも
+使われるか、将来もcomposer専用であり続けるかは今回の観測からは分からない。
+唯一の表示composerと有効submitterがあっても、未知formを正規と認定する根拠には
+足りないため、今回はplacementを削除したり未知値を許可したりしない。
+依存を減らす判断には、通常チャット・Work・送信対象外formでの追加実測と、
+安定した識別根拠に基づく正負のfixtureが必要。
+
+2026-10-10の再実測でも修正前の送信不能が継続していたことをユーザーが確認した。
+その後、修正を適用した実ChatGPT Web版で、Workのhome入力欄のEnter改行・
+設定ショートカットによる送信、および通常チャットの動作が正常になったと
+ユーザーから報告された。修正前に送信不能だった環境での復旧確認を受け、
+manifest versionを1.3.4に更新する。
+ローカルChromiumのfixture試験は、実アプリの送信ハンドラやOS IMEを保証しない。
+以下は手動回帰確認の手順であり、上記以外の項目をすべて確認済みとするものではない。
+
+1. Chromeの拡張管理でこのフォルダの拡張を再読み込みし、対象ChatGPTタブも再読み込みする。
+2. Workのhomeで、初期化マーカー、唯一の表示composer、フォーカス、formの両属性、
+   同じformに属する唯一の表示・有効submitterを確認する。
+3. テスト用会話に短い文を入力し、Enterで改行・未送信、設定したショートカットで
+   1回だけ送信されることを確認する。初回送信後のthreadと通常チャットでも繰り返す。
+4. Shift/Controlなど実環境で選べる送信設定を切り替え、設定した組合せだけが送信するか確認する。
+5. 日本語IME変換確定で送信されないこと、キー長押しで重複送信されないこと、
+   空入力・送信無効時に送信されないことを確認する。
+6. CRLFの複数行貼り付けとUndo/Redoを確認する。UI言語を変えられる場合は送信も再確認する。
 
 ## Oopsとの将来連携
 
