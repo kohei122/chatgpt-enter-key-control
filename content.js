@@ -39,8 +39,7 @@ const DEV_FORCE_MAC_PLATFORM_KEY = "devForceMacPlatform";
 let settings = { ...DEFAULT_SETTINGS };
 let settingsLoaded = false;
 let isMacPlatform = false;
-let isComposingActive = false;
-let lastCompositionEndAt = 0;
+const compositionStates = new WeakMap();
 const COMPOSITION_END_GRACE_MS = 80;
 
 function getIsMacPlatform() {
@@ -129,7 +128,7 @@ function blockEnterEvent(event) {
   event.stopImmediatePropagation();
 }
 
-// Require a unique, connected editor; never guess between multiple composers.
+// Keep the observed editor contract; resolve ambiguity within the operated form.
 const CHATGPT_COMPOSER_SELECTOR =
   '#prompt-textarea, .ProseMirror[contenteditable="true"][role="textbox"][data-composer-markdown]';
 
@@ -151,16 +150,31 @@ function isDisplayedChatGPTComposer(root) {
     style.visibility !== "collapse";
 }
 
-function getChatGPTComposer() {
-  const candidates = Array.from(document.querySelectorAll(CHATGPT_COMPOSER_SELECTOR))
+function getDisplayedChatGPTComposers() {
+  return Array.from(document.querySelectorAll(CHATGPT_COMPOSER_SELECTOR))
     .filter(isValidChatGPTComposer)
     .filter(isDisplayedChatGPTComposer);
-  return candidates.length === 1 ? candidates[0] : null;
 }
 
 function getComposerForTarget(target) {
-  const root = getChatGPTComposer();
-  return root && target && typeof target.nodeType === "number" && root.contains(target) ? root : null;
+  if (!target || typeof target.nodeType !== "number" || !document.hasFocus()) return null;
+  const candidates = getDisplayedChatGPTComposers();
+  const containing = candidates.filter(root => root.contains(target));
+  if (containing.length !== 1) return null;
+  const root = containing[0];
+  if (!root.contains(document.activeElement)) return null;
+  const form = root.closest("form");
+  if (form?.isConnected && isRecognizedChatGPTComposerForm(form)) {
+    // Count all candidates inside this form, including malformed nested structures.
+    return candidates.filter(candidate => form.contains(candidate)).length === 1 ? root : null;
+  }
+  // Preserve singleton legacy/unknown-form behavior without extending it to multi-composer UI.
+  return candidates.length === 1 ? root : null;
+}
+
+function isComposerComposing(root) {
+  const state = root && compositionStates.get(root);
+  return !!state && (state.active || performance.now() - state.endedAt < COMPOSITION_END_GRACE_MS);
 }
 
 function isRecognizedChatGPTComposerForm(form) {
@@ -170,13 +184,12 @@ function isRecognizedChatGPTComposerForm(form) {
       ["thread", "home"].includes(form?.getAttribute("data-composer-placement")));
 }
 
-function sendFromComposer(composer, target) {
-  if (getChatGPTComposer() !== composer || !document.hasFocus() ||
-      !composer.contains(document.activeElement)) return;
-
+function sendFromComposer(composer, target, expectedForm) {
+  if (getComposerForTarget(target) !== composer || isComposerComposing(composer)) return;
   const form = composer.closest("form");
+  if (form !== expectedForm) return;
   const usesFormSend = composer.id !== "prompt-textarea" ||
-    form?.hasAttribute("data-chatgpt-composer");
+    isRecognizedChatGPTComposerForm(form);
   if (!usesFormSend) {
     // Preserve the previous ChatGPT keyboard route only for the legacy editor.
     if (composer.id === "prompt-textarea") dispatchEnter(target, { metaKey: true });
@@ -201,6 +214,8 @@ function sendFromComposer(composer, target) {
     if (style.display === "none" || style.visibility === "hidden" ||
         style.visibility === "collapse" || style.opacity === "0") return;
   }
+  if (getComposerForTarget(target) !== composer || composer.closest("form") !== form ||
+      isComposerComposing(composer) || button.form !== form || !form.contains(button)) return;
   // Synchronous with the trusted shortcut. Keep native button activation and app handlers.
   // Do not retry or submit the form separately: a click handler may already have sent.
   try { button.click(); }
@@ -210,12 +225,10 @@ function sendFromComposer(composer, target) {
 function handleKey(event) {
   const isEnter = event.code === "Enter" || event.code === "NumpadEnter";
   const composer = getComposerForTarget(event.target);
-  const inCompositionGraceWindow =
-    lastCompositionEndAt > 0 &&
-    performance.now() - lastCompositionEndAt < COMPOSITION_END_GRACE_MS;
+  const form = composer?.closest("form");
 
   if (!event.isTrusted) return;
-  if (isComposingActive || event.isComposing || event.keyCode === 229 || inCompositionGraceWindow) return;
+  if (isComposerComposing(composer) || event.isComposing || event.keyCode === 229) return;
   if (!settingsLoaded) return;
   if (!settings.enabled) return;
   if (!composer || !isEnter) return;
@@ -255,7 +268,7 @@ function handleKey(event) {
   if (isSend) {
     const canSend = event.cancelable && !event.defaultPrevented && !event.repeat && !event.altKey;
     blockEnterEvent(event);
-    if (canSend && event.defaultPrevented) sendFromComposer(composer, event.target);
+    if (canSend && event.defaultPrevented) sendFromComposer(composer, event.target, form);
     return;
   }
 
@@ -271,18 +284,26 @@ initPasteCRNormalization();
 document.addEventListener("keydown", handleKey, { capture: true });
 
 document.addEventListener("compositionstart", (event) => {
-  if (!getComposerForTarget(event.target)) return;
-  isComposingActive = true;
+  const root = getComposerForTarget(event.target);
+  if (root) compositionStates.set(root, { active: true, endedAt: -Infinity });
 }, { capture: true });
 
-document.addEventListener("compositionend", (event) => {
-  if (!getComposerForTarget(event.target)) return;
-  isComposingActive = false;
-  lastCompositionEndAt = performance.now();
-}, { capture: true });
+// An ending event can arrive after focus moved or the editor became hidden.
+for (const type of ["compositionend", "focusout"]) {
+  document.addEventListener(type, (event) => {
+    for (let node = event.target; node; node = node.parentNode) {
+      if (!compositionStates.has(node)) continue;
+      if (type === "focusout" && (!compositionStates.get(node).active ||
+          (event.relatedTarget && node.contains(event.relatedTarget)))) break;
+      compositionStates.set(node, { active: false, endedAt: performance.now() });
+      break;
+    }
+  }, { capture: true });
+}
 
 function initPasteCRNormalization() {
-  let faulted = false, composing = false, imeAt = -Infinity;
+  let faulted = false;
+  const pasteIMEStates = new WeakMap();
   let session = null, inCommand = false;
   const handled = new WeakSet();
 
@@ -293,19 +314,33 @@ function initPasteCRNormalization() {
   // Independent paste safeguards; preserve the existing Enter composition handling.
   for (const type of ["compositionstart", "compositionupdate", "compositionend"]) {
     window.addEventListener(type, event => {
-      if (!getComposerForTarget(event.target)) return;
-      composing = type !== "compositionend";
-      imeAt = performance.now();
+      let root = getComposerForTarget(event.target);
+      if (!root && type === "compositionend") {
+        for (let node = event.target; node; node = node.parentNode) {
+          if (pasteIMEStates.has(node)) { root = node; break; }
+        }
+      }
+      if (root) pasteIMEStates.set(root, { composing: type !== "compositionend", at: performance.now() });
     }, true);
   }
   window.addEventListener("keydown", event => {
-    if (getComposerForTarget(event.target) && (event.isComposing || event.keyCode === 229)) {
-      imeAt = performance.now();
+    const root = getComposerForTarget(event.target);
+    if (root && (event.isComposing || event.keyCode === 229)) {
+      pasteIMEStates.set(root, { composing: pasteIMEStates.get(root)?.composing || false, at: performance.now() });
+    }
+  }, true);
+  window.addEventListener("focusout", event => {
+    for (let node = event.target; node; node = node.parentNode) {
+      if (!pasteIMEStates.has(node)) continue;
+      if (!pasteIMEStates.get(node).composing ||
+          (event.relatedTarget && node.contains(event.relatedTarget))) break;
+      pasteIMEStates.set(node, { composing: false, at: performance.now() });
+      break;
     }
   }, true);
 
-  function isSupportedComposer(root) {
-    return isValidChatGPTComposer(root) && getChatGPTComposer() === root;
+  function isSupportedComposer(root, form) {
+    return getComposerForTarget(root) === root && root.closest("form") === form;
   }
   function isExpectedEmptyComposer(root) {
     if (root.textContent !== "" || root.childNodes.length !== 1) return false;
@@ -370,8 +405,10 @@ function initPasteCRNormalization() {
     if (!/^https:\/\/(chatgpt\.com|chat\.openai\.com)(\/|$)/.test(location.href)) return;
     const root = getComposerForTarget(event.target);
     if (!root) return;
-    if (composing || isComposingActive || performance.now() - imeAt < COMPOSITION_END_GRACE_MS ||
-        (lastCompositionEndAt > 0 && performance.now() - lastCompositionEndAt < COMPOSITION_END_GRACE_MS)) return;
+    const form = root.closest("form");
+    const ime = pasteIMEStates.get(root);
+    if (isComposerComposing(root) || ime?.composing ||
+        (ime && performance.now() - ime.at < COMPOSITION_END_GRACE_MS)) return;
     if (!isExpectedEmptyComposer(root) || !document.hasFocus() || document.activeElement !== root ||
         !hasComposerSelection(root) || typeof document.execCommand !== "function") return;
 
@@ -393,7 +430,7 @@ function initPasteCRNormalization() {
       session = null;
       let ok = false;
       try {
-        ok = !forceFailure && result === true && isSupportedComposer(root) && location.href === url &&
+        ok = !forceFailure && result === true && isSupportedComposer(root, form) && location.href === url &&
           document.hasFocus() && document.activeElement === root &&
           matchesInsertedParagraphs(root, paste.lines) && selectionAtEnd(root);
       } catch (_) { /* Never expose clipboard content through exception messages. */ }

@@ -422,18 +422,18 @@ test('partial matches, noneditable, detached and wrong-tag roots are excluded', 
   }
 });
 
-test('multiple valid candidates are ambiguous even when one is legacy or focused', async () => {
+test('multiple valid candidates in the operated scope remain ambiguous even when focused', async () => {
   for (const attrs of [
     { id: 'prompt-textarea', class: 'ProseMirror', contenteditable: 'true' },
     { class: 'ProseMirror', contenteditable: 'true', role: 'textbox', 'data-composer-markdown': '' }
   ]) {
-    const h = await setup(), other = h.body.append(new Element('DIV', attrs));
+    const h = await setup(), other = (h.form || h.body).append(new Element('DIV', attrs));
     for (const target of [h.root, h.root.firstChild, other]) {
       assert.equal(h.event('keydown', { target, code: 'Enter' }).prevented, undefined);
       h.event('compositionstart', { target });
     }
     assertSkipped(h, h.paste());
-    h.body.childNodes = [h.root]; other.isConnected = false;
+    other.isConnected = false;
     h.root.dispatchEvent = () => {};
     assert.equal(h.event('keydown', { code: 'Enter' }).prevented, true);
     h.paste(); h.frame(500); assert.equal(h.commands.length, 1); h.clean();
@@ -469,8 +469,8 @@ test('root and descendant IME Enter protection includes composition and exact gr
 test('legacy URL remains supported and a second composer during paste validation faults safely', async () => {
   const h = await setup(); h.context.location.href = 'https://chat.openai.com/c/test';
   h.paste(); assert.equal(h.commands.length, 1);
-  h.body.append(new Element('DIV', { role: 'textbox', class: 'ProseMirror', contenteditable: 'true', 'data-composer-markdown': '' }));
-  h.frame(500); h.body.childNodes = [h.root]; h.resetEmpty();
+  const other = (h.form || h.body).append(new Element('DIV', { role: 'textbox', class: 'ProseMirror', contenteditable: 'true', 'data-composer-markdown': '' }));
+  h.frame(500); other.isConnected = false; h.resetEmpty();
   assert.equal(h.paste().prevented, undefined); assert.equal(h.commands.length, 1); h.clean();
 });
 
@@ -496,7 +496,7 @@ test('send requires one trusted, allowed shortcut with focus and no IME activity
     if (reason === 'outside-focus') h.document.activeElement = h.body;
     if (reason === 'blurred') h.document.hasFocus = () => false;
     if (reason === 'wrong-shortcut') { extra.shiftKey = false; extra.ctrlKey = true; }
-    if (reason === 'ambiguous') h.body.append(new Element('DIV', { ...h.root.attrs }));
+    if (reason === 'ambiguous') (h.form || h.body).append(new Element('DIV', { ...h.root.attrs }));
     h.event('keydown', extra);
     assert.equal(h.submissions.length, 0, reason); assert.equal(dispatched.length, 0, reason); h.clean();
   }
@@ -527,6 +527,174 @@ if (dom === 'legacy') {
 }
 
 if (dom !== 'legacy') {
+  function addSide(h) {
+    const form = h.body.append(new Element('FORM', {
+      'data-composer-placement': 'thread', 'data-thread-find-composer': 'true'
+    }));
+    const root = form.append(new Element('DIV', {
+      class: 'ProseMirror', role: 'textbox', contenteditable: 'true', 'data-composer-markdown': ''
+    }));
+    root.append(new Element('P')).append(new Element('BR'));
+    const button = form.append(new Element('BUTTON', { type: 'submit' }));
+    const sends = [], keys = [];
+    button.click = () => sends.push(form);
+    root.dispatchEvent = e => keys.push(e);
+    return { form, root, button, sends, keys };
+  }
+
+  test('side-chat: exact existing filters accept two separate forms and route each focused operation once', async () => {
+    for (const [os, mode, mods] of [
+      ['win', 'shift', { shiftKey: true }], ['win', 'ctrl', { ctrlKey: true }],
+      ['win', 'both', { ctrlKey: true }], ['win', 'combo', { ctrlKey: true, shiftKey: true }],
+      ['mac', 'cmd', { metaKey: true }], ['mac', 'shiftCmd', { metaKey: true, shiftKey: true }]
+    ]) {
+      const h = await setup(true, os, mode), side = addSide(h), keys = [];
+      h.root.dispatchEvent = e => keys.push(e);
+      assert.equal(h.body.querySelectorAll('.ProseMirror[contenteditable="true"][role="textbox"][data-composer-markdown]').length, 2);
+      for (const [root, target] of [[h.root, h.root.firstChild], [side.root, side.root.firstChild], [h.root, h.root]]) {
+        h.document.activeElement = root;
+        target.dispatchEvent = e => (root === h.root ? keys : side.keys).push(e);
+        assert.equal(h.event('keydown', { target, code: 'Enter' }).prevented, true);
+        h.event('keydown', { target, code: 'Enter', ...mods });
+        h.event('keydown', { target, code: 'Enter', repeat: true, ...mods });
+      }
+      assert.equal(keys.length, 2); assert.ok(keys.every(e => e.shiftKey));
+      assert.equal(side.keys.length, 1); assert.equal(side.keys[0].shiftKey, true);
+      assert.equal(h.submissions.length, 2); assert.ok(h.submissions.every(e => e.submitter === h.button));
+      assert.deepEqual(side.sends, [side.form]); h.clean();
+    }
+  });
+
+  test('side-chat: unrelated, unknown-form and nested editors never gain multi-form eligibility', async () => {
+    for (const reason of ['missing-markdown', 'unknown-form', 'same-form', 'nested-editor', 'mismatched-focus']) {
+      const h = await setup(), side = addSide(h);
+      if (reason === 'missing-markdown') delete side.root.attrs['data-composer-markdown'];
+      if (reason === 'unknown-form') side.form.attrs = {};
+      if (reason === 'same-form') {
+        side.form.childNodes = side.form.childNodes.filter(n => n !== side.root); h.form.append(side.root);
+      }
+      if (reason === 'nested-editor') {
+        side.form.childNodes = side.form.childNodes.filter(n => n !== side.root); h.root.append(side.root);
+      }
+      h.document.activeElement = reason === 'mismatched-focus' ? h.root : side.root;
+      assert.equal(h.event('keydown', { target: side.root, code: 'Enter' }).prevented, undefined, reason);
+      h.event('keydown', { target: side.root, code: 'Enter', shiftKey: true });
+      assert.equal(h.submissions.length, 0); assert.equal(side.sends.length, 0);
+      h.clean();
+    }
+  });
+
+  test('side-chat: legacy IDs in recognized forms use only their own buttons, never synthetic send', async () => {
+    const h = await setup(), side = addSide(h);
+    h.root.attrs.id = side.root.attrs.id = 'prompt-textarea';
+    h.root.dispatchEvent = () => assert.fail('Recognized multi-form UI must use its own button');
+    side.root.dispatchEvent = h.root.dispatchEvent;
+    for (const target of [h.root, side.root]) {
+      h.document.activeElement = target;
+      h.event('keydown', { target, code: 'Enter', shiftKey: true });
+    }
+    assert.equal(h.submissions.length, 1); assert.deepEqual(side.sends, [side.form]); h.clean();
+  });
+
+  test('side-chat: send revalidates focus, form identity, replacement, visibility and editability after cancellation', async () => {
+    for (const reason of ['focus', 'blur', 'form-move', 'replacement', 'hidden', 'readonly', 'duplicate']) {
+      const h = await setup(), side = addSide(h);
+      h.event('keydown', { code: 'Enter', shiftKey: true, preventDefault() {
+        this.defaultPrevented = true;
+        if (reason === 'focus') h.document.activeElement = side.root;
+        if (reason === 'blur') h.document.hasFocus = () => false;
+        if (reason === 'form-move') {
+          h.form.childNodes = h.form.childNodes.filter(n => n !== h.root);
+          side.root.isConnected = false; side.form.append(h.root);
+        }
+        if (reason === 'replacement') { h.root.isConnected = false; h.form.append(new Element('DIV', { ...h.root.attrs })); }
+        if (reason === 'hidden') h.root.attrs.hidden = '';
+        if (reason === 'readonly') h.root.attrs.contenteditable = 'false';
+        if (reason === 'duplicate') h.form.append(new Element('DIV', { ...h.root.attrs }));
+      } });
+      assert.equal(h.submissions.length, 0, reason); assert.equal(side.sends.length, 0, reason); h.clean();
+    }
+  });
+
+  test('side-chat: missing or unsafe own submitters never use the other form button', async () => {
+    for (const reason of ['missing', 'multiple', 'foreign', 'disabled', 'hidden', 'unknown']) {
+      const h = await setup(), side = addSide(h);
+      if (reason === 'missing') h.form.childNodes = h.form.childNodes.filter(n => n !== h.button);
+      if (reason === 'multiple') h.form.append(new Element('BUTTON', { type: 'submit' }));
+      if (reason === 'foreign') h.button.formOverride = side.form;
+      if (reason === 'disabled') h.button.disabled = true;
+      if (reason === 'hidden') h.button.attrs.hidden = '';
+      if (reason === 'unknown') h.form.attrs = {};
+      h.event('keydown', { code: 'Enter', shiftKey: true });
+      assert.equal(h.submissions.length, 0, reason); assert.equal(side.sends.length, 0, reason); h.clean();
+    }
+  });
+
+  test('side-chat: both forms preserve trusted, cancelable, non-repeating shortcut guards', async () => {
+    for (const targetSide of [false, true]) {
+      for (const extra of [
+        { isTrusted: false }, { repeat: true }, { defaultPrevented: true }, { cancelable: false },
+        { preventDefault() {} }, { altKey: true }, { keyCode: 229 }, { isComposing: true }
+      ]) {
+        const h = await setup(), side = addSide(h), target = targetSide ? side.root : h.root;
+        h.document.activeElement = target;
+        h.event('keydown', { target, code: 'Enter', shiftKey: true, ...extra });
+        assert.equal(h.submissions.length, 0); assert.equal(side.sends.length, 0); h.clean();
+      }
+    }
+  });
+
+  test('side-chat: IME state and exact 80ms grace belong to the originating editor', async () => {
+    const h = await setup(), side = addSide(h);
+    h.root.dispatchEvent = () => {};
+    h.event('compositionstart');
+    h.document.activeElement = side.root;
+    h.event('keydown', { target: side.root, code: 'Enter', shiftKey: true });
+    assert.equal(side.sends.length, 1);
+    h.event('compositionend', { target: h.root }); // End after focus moved.
+    h.document.activeElement = h.root;
+    h.frame(79);
+    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, undefined);
+    h.frame(1);
+    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, true);
+    for (const extra of [{ keyCode: 229 }, { isComposing: true }]) {
+      assert.equal(h.event('keydown', { code: 'Enter', ...extra }).prevented, undefined);
+    }
+    h.event('compositionstart'); h.event('focusout');
+    h.document.activeElement = side.root;
+    h.event('keydown', { target: side.root, code: 'Enter', shiftKey: true });
+    assert.equal(side.sends.length, 2);
+    h.document.activeElement = h.root; h.frame(80);
+    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, true); h.clean();
+  });
+
+  test('side-chat: opening and closing a separate form does not invalidate a normalized paste', async () => {
+    const h = await setup(); h.paste();
+    const side = addSide(h); h.frame(500); h.clean();
+    h.resetEmpty(); h.paste(); side.form.isConnected = false; side.root.isConnected = false;
+    h.frame(500); assert.equal(h.commands.length, 2); h.clean();
+    h.resetEmpty(); h.paste(); h.frame(500); assert.equal(h.commands.length, 3); h.clean();
+  });
+
+  test('side-chat: paste retains form identity and faults if its editor moves to another form', async () => {
+    const h = await setup(), side = addSide(h);
+    h.paste();
+    h.form.childNodes = h.form.childNodes.filter(n => n !== h.root);
+    side.root.isConnected = false; side.form.append(h.root);
+    h.frame(500); h.resetEmpty();
+    assert.equal(h.paste().prevented, undefined); assert.equal(h.commands.length, 1); h.clean();
+  });
+
+  test('side-chat: composition in a removed editor cannot block another editor paste or shortcut', async () => {
+    const h = await setup(), side = addSide(h);
+    h.document.activeElement = side.root; h.event('compositionstart', { target: side.root });
+    side.form.isConnected = false; side.root.isConnected = false;
+    h.document.activeElement = h.root;
+    h.paste(); h.frame(500); assert.equal(h.commands.length, 1);
+    h.event('keydown', { code: 'Enter', shiftKey: true });
+    assert.equal(h.submissions.length, 1); h.clean();
+  });
+
   test('form recognition requires the old marker or both exact thread/home attribute values', async () => {
     const cases = [
       [{ 'data-chatgpt-composer': '' }, true],
@@ -673,7 +841,7 @@ test('visible composer remains usable with a connected zero-size stale composer'
     }
     // Candidate changes must be evaluated live, even with focus still on the original root.
     stale.rect = { width: 524, height: 36 };
-    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, undefined);
+    assert.equal(h.event('keydown', { code: 'Enter' }).prevented, dom === 'legacy' ? undefined : true);
     stale.rect = { width: 0, height: 0 };
     assert.equal(h.event('keydown', { code: 'Enter' }).prevented, true); h.clean();
   }
@@ -712,7 +880,7 @@ test('non-displayed composers are excluded from Enter, send, IME and paste handl
   }
 });
 
-test('display eligibility has no fixed position, minimum size, focus or ancestor opacity heuristic', async () => {
+test('display eligibility has no fixed position, minimum size or ancestor opacity heuristic; focus is required', async () => {
   const h = await setup(), dispatched = [];
   h.root.rect = { x: -1000, y: 10000, width: 0.5, height: 0.5 };
   h.root.attrs['aria-hidden'] = 'false';
@@ -720,6 +888,8 @@ test('display eligibility has no fixed position, minimum size, focus or ancestor
   h.root.style = { visibility: 'visible' }; // A descendant may override inherited visibility.
   h.document.activeElement = h.body;
   h.root.dispatchEvent = e => dispatched.push(e);
+  assert.equal(h.event('keydown', { code: 'Enter' }).prevented, undefined);
+  h.document.activeElement = h.root;
   assert.equal(h.event('keydown', { code: 'Enter' }).prevented, true);
   assert.equal(dispatched.length, 1); h.clean();
 });

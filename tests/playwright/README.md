@@ -2,8 +2,8 @@
 
 ## 実行
 
-Node.js 20以上。単体テストはNode標準 `node:test` と `vm` による160件です。
-既存127件を維持し、Workのhome formでも同じ回帰テスト33件を実行します。
+Node.js 20以上。単体テストはNode標準 `node:test` と `vm` による200件です。
+旧ID・旧フォーム・通常thread・Work thread/homeを検証し、フォーム別のサイドチャット回帰を追加しています。
 以前はpackage.jsonがなく、直接Nodeで実行していました。
 
 ```sh
@@ -15,9 +15,9 @@ npm run test:all
 ```
 
 - `npm test` / `npm run test:unit`: 従来の単体テストのみ。
-- `npm run test:browser`: composer回帰19件とpopup回帰7件、計26件。
+- `npm run test:browser`: composer回帰31件とpopup回帰7件、計38件。
 - `npm run test:all`: 単体、ブラウザの順に実行。失敗は非0で終了。
-- インストール時のみnpm/CDN接続が必要。テスト実行はlocalhostのみ。
+- インストール時のみnpm/CDN接続が必要。テスト実行はローカルfixtureのみ（貼り付けはオフラインHTTPS originを使用）。
 - Linux CIでは `npx playwright install --with-deps chromium` を使用できる。
   headlessのためXvfb不要。今回の実測環境はWindows、Node 22.16.0、
   Playwright 1.63.0、付属Chromium 153.0.8010.12。Linux実機は未検証。
@@ -30,14 +30,18 @@ npm run test:all
 
 各テスト専用の一時ディレクトリに、実際のcontent.js、popup.js/html、
 アイコン、ロケールをそのままコピーする。本番manifestは読み取りのみ。
-一時manifestに限りcontent_scripts.matchesを `http://127.0.0.1/*` に置換し、
+一時manifestに限りcontent_scripts.matchesをlocalhostとオフライン貼り付けfixture用の
+`https://chatgpt.com/__enter-key-control-tests__/*` に置換し、
 設定投入用の小さなservice workerを追加する。本番拡張にはservice workerはない。
 このworkerは拡張IDとchrome.storage.localへのアクセス用で、DOM・キー・送信ロジックを持たない。
 content scriptの直接evalや代替実装は使用しない。
 popupを開いたりactiveTabによる注入を行ったりせず、manifest経由で自動注入させる。
 
-localhost HTTP serverはランダムポートを使う。URLマッピング方式よりも
-実サイト由来のURLを使わない構成を選んだ。
+localhost HTTP serverはランダムポートを使う。貼り付け試験だけは本番のURLガードを通すため、
+上記HTTPSパスを使用する。PlaywrightがHTML・JS・CSSをローカルfixtureから直接fulfillし、
+外部へcontinue/fetchしない。外部DNS解決も遮断し、新規プロファイルのCookieは空である。
+貼り付け試験ではテスト用Chromiumにclipboard権限を付与し、固定の試験文字列を貼り付ける。
+これは試験用設定であり、本番manifestの権限を追加するものではない。
 fixture以外へのリクエストは中断しテスト失敗、外部DNS解決も遮断する。
 認証・実サイト・Store APIを使わず、Cookieを投入しない。
 Cookieが空であることも確認する。通常終了・テスト失敗時にはcontextを閉じ、
@@ -63,7 +67,7 @@ data-composer-markdownで、送信ボタンはform内のbutton[type=submit]。
 | home-composer.html | 2026-10-08のWork実測に基づくhomeとdata-thread-find-composer=trueのform。旧属性なし。Enter改行、Shift+Enterクリック1回 |
 | stale-composer.html | 0×0の残存editorと有効editor。有効な一候補を使って送信1回 |
 | stale-only.html | 0×0 editorのみ。実際にfocusしてtrusted shortcutを押しても送信0回 |
-| multiple-composers.html | 可視editor二つ。どちらをfocusしても曖昧として拡張から送信しない |
+| multiple-composers.html | 認識済みの別formに可視editor二つ。focusしたeditorのformだけを操作。primary-form/side-formで送信先も検証 |
 | no-submitter.html | ボタンなし。改行維持、shortcut送信0回 |
 | multiple-submitters.html | ボタン二つ。改行維持、shortcut送信0回 |
 | unknown-form.html | thread属性の片方が欠落。改行維持、shortcut送信0回 |
@@ -80,17 +84,21 @@ syntheticイベントにネイティブ編集のdefault actionがないため、
 synthetic Meta+Enterは意図的に無視し、古い送信経路ではPASSしない構造にする。
 拡張無効のnegative controlで、素のEnterが送信、Shift+Enterが改行になることも確認する。
 
-composer自体が曖昧・非表示なら、既存実装はイベントへ介入しない。
+同じform内のcomposerが曖昧・対象が非表示・focus不一致なら、拡張はイベントへ介入しない。
+別々の認識済みformに有効composerが一つずつあれば、それぞれ操作できる。
+未認識formやformなしの旧ID経路は、従来のdocument全体の一意性を維持する。
 ここでいうfail closedは「拡張が送信操作を発火しない」ことで、
 ホストページ自身のすべての送信を禁止する保証ではない。
 候補が有効で送信UIだけが不確かな場合は、改行維持と送信0回を両方検証する。
 
 ## カバレッジと限界
 
-19件: 正常旧/thread/home/stale混在4件、ctrl/both/combo3件、
-no/multiple/unknown submitter/form3件、複数composer1件、staleのみ1件、
+従来の19件: 正常旧/thread/home/stale混在4件、ctrl/both/combo3件、
+no/multiple/unknown submitter/form3件、複数formの操作1件、staleのみ1件、
 disabled/hidden/aria-disabled/opacity=0 submitter4件、
 composition1件、不許可shortcut1件、拡張無効negative control1件。
+追加12件: サイド単独、開閉・再追加・DOM交換、同一form内の曖昧性、他formへの代替送信禁止6条件、
+無関係editor、入力欄別IME、trusted CRLF貼り付けと各入力欄の1回のUndo/Redo。
 
 popup.spec.cjsは7言語ごとに実際の拡張popup.htmlを220px幅のタブで開く。
 詳細ラベルと矢印、初期折りたたみ・展開・再読み込み時の状態、言語切替と保持、
@@ -106,8 +114,9 @@ paste normalizationの厳密条件は既存単体テストが担当する。
 実OS IMEの候補確定を再現するものではない。
 ページ自身もcomposition中のEnterを送信に使わない最小契約を持つ。
 
-localhostではcontent.jsのpaste用URLガードを通らないため、
-このブラウザテストは実サイトでのpaste/Undo/Redoを保証しない。
+localhostではcontent.jsのpaste用URLガードを通らない。追加のHTTPSオフラインfixtureでは
+manifest経由で本番content.jsを注入し、trusted pasteのCRLF検出・キャンセル・段落構造・
+CR除去とUndo/Redoを検証する。実サイトでのpaste/Undo/Redoを保証するものではない。
 ProseMirror自体やReact、実ChatGPTの挙動・将来の未知DOMを完全再現するものでもない。
 DOM変更を観測したら、個人データを含まない最小fixtureを追加して回帰を固定する。
 
@@ -176,15 +185,76 @@ manifest versionを1.3.4に更新する。
    空入力・送信無効時に送信されないことを確認する。
 6. CRLFの複数行貼り付けとUndo/Redoを確認する。UI言語を変えられる場合は送信も再確認する。
 
-## Oopsとの将来連携
+## Oopsとの責任分界（v1.3.6確定時の確認）
 
-Oopsは今回変更しない。将来はextensions.jsonに例えば次を追加し、
-アプリrepoをcwdにしてコマンドの終了コードを検査する構成が考えられる。
+隣接OopsのREADME、docs/release-delivery.md、docs/release-workflow.md、config/extensions.jsonを読み取り確認した。
+ChatGPTにはManifest・Chrome公開baseline 1.3.2との権限比較・Unit/Browser共通Runner・既存ZIP検査が登録済み。
+正式なローカルゲートはOops directoryで次を実行する。外部CI・Store操作・認証取得は行わない。
 
-```json
-{ "browserTestCommand": "npm run test:browser" }
+```sh
+python -B -m oops check chatgpt-enter-key-control --tests all --require-tests --require-baseline --strict
 ```
 
-これは提案であり、現在のOops configへそのまま追加済み・対応済みという意味ではない。
-依存とブラウザの導入はCIの事前準備とし、検査コマンド中にインストールしない。
-Gemini等へはrunnerの方式を再利用できるが、fixtureと期待値は各アプリのDOM契約に合わせる。
+ZIP未指定のPACKAGE_NOT_CHECKED INFOはZIP検査済みを意味しない。ZIP生成後に同じcheckへ
+`--zip <absolute-path>`を指定し、manifest・権限・Package Validationを別途通す。
+ChatGPTのpackage.recipeは未登録、統合release-workflowはClaude限定のため、今回その生成・公開機能は使用しない。
+Oopsのソース・設定・baseline・stateは変更せず、ChatGPTの既存1.3.5 ZIPの14ファイル集合を
+明示allowlistとして、push済み確定commitのGit blobから1.3.6 ZIPを生成する。
+ZIPはrepo外に新規作成し、同名ファイルを上書きしない。全メンバーのcommit bytes一致、CRC、7言語、
+manifest参照資産、親folder・開発ファイル不在、SHA256を検証する。
+
+<a id="v136-release-validation"></a>
+
+## v1.3.6 サイドチャット対応・リリース検証記録（2026-10-26）
+
+ユーザー確認DOMはDIV.ProseMirror、role=textbox、contenteditable=true、
+data-composer-markdownあり。form自身にdata-composer-placement=threadとdata-thread-find-composer=true、
+親form所属の表示・有効なsubmit buttonが1個あり、既存の厳密なフィルターを満たす。
+診断用ProseMirror数だけで候補数を判断せず、追加試験では既存セレクターと有効性・表示条件を満たす2候補を構成する。
+
+イベント対象を含む可視・有効候補を一意に選び、document focusとactiveElementの包含を要求する。
+認識済みformではform内候補が1個であることを要求し、送信時は取得時のform同一性も再確認する。
+認識済みformでは旧IDがあっても所属formのボタンを使う。旧ID・未認識formの従来経路は
+全体が一候補のときだけ維持し、未知formの送信を新たに許可しない。
+同一form内の複数候補、入れ子候補、送信UIの曖昧性は非介入／送信なしを維持する。
+
+IME状態はWeakMapで入力欄別に保持し、compositionendはfocus移動後も元の入力欄へ記録する。
+変換中のfocusoutはその入力欄の状態を終了して80ms保護を残す。
+貼り付けは独立したIME条件、厳密な空欄・MIME・選択範囲・文字列制限を維持し、
+挿入後は元入力欄と元form、focus、段落内容、末尾選択を再検証する。
+別formの追加・削除だけでは失敗としない。同一formの曖昧化、移動、交換、検証失敗は再試行せず安全側で停止する。
+
+開発時HEAD（69c7e2e）の旧content.jsをファイルへ書かずメモリ上で追加回帰に読み込ませ、
+旧form/thread-chat/thread-work/home-workの4構成すべてでEnter非介入による失敗を確認した。
+これは意図した回帰検出であり、修正後の全テスト結果とは区別する。
+
+manifestを1.3.5から1.3.6へ更新。独立した開発package version方針は記録されておらず、
+過去のmanifest更新時に残っていたpackage.json/package-lock.jsonの1.3.3も1.3.6へ同期する。
+確定作業では機能コード・安全条件を追加変更せず、versionとリリース記録を更新する。
+本番permissionsはstorage/activeTab/scriptingのまま。host_permissions追加なし、content_scripts範囲変更なし、
+外部通信・テレメトリー・会話内容収集の追加なし。
+
+ユーザーが実ChatGPT環境で以下の全9項目PASSを確認したと報告した。
+これはユーザーによる実ブラウザ確認であり、Codex自身が実施したものではない。
+
+1. 通常チャットのEnter改行・ショートカット送信：PASS
+2. サイドチャットのEnter改行・ショートカット送信：PASS
+3. 送信先の正確性・重複送信なし：PASS
+4. 通常チャットとサイドチャットのフォーカス切替：PASS
+5. サイドチャットの閉じる・再表示：PASS
+6. 日本語IME変換・確定：PASS
+7. 送信ショートカット長押し：PASS
+8. CRLF複数行貼り付け・Undo/Redo：PASS
+9. ChatGPT Work home/threadの既存動作：PASS
+
+確定版の自動検証結果（2026-10-26）：
+
+- `npm run test:all`：Unit 200件成功・失敗0・skip 0、Playwright 38件成功・失敗0・skip 0（composer 31件、popup 7言語）。
+- Oops `check --tests all --require-tests --require-baseline --strict`：終了0、Unit/BrowserともPASS。FAIL・未承認WARNINGなし。ZIP作成前のPACKAGE_NOT_CHECKED INFOは作成後の検査と区別する。
+- 本番・変更テストJSの`node --check`、manifest/package/lockfileのversion一致、manifest差分がversionのみ、7言語と権限の監査、`git diff --check`：PASS。
+- 開発候補の7ファイルを保護し、確定時の追加変更はREADME・manifest・package・lockfileと本記録のみ。機能コードの追加変更なし。
+
+検証の限界：自動試験はfixtureとVM、実サイトの確認は上記ユーザー報告に限る。
+全OS・全UI言語・全アカウントでの実サイト動作や将来のDOMは保証しない。Chrome/Edgeのストア提出・公開確認とLP更新は次工程。
+キャンセル済み送信ショートカットから送信しないことを検証する。既存のキー伝播抑止は維持しており、
+「キャンセル済みイベントへの非介入」を一切のイベント操作なしと解釈する場合とは異なる。今回は機能変更しない。

@@ -29,6 +29,13 @@ A Chrome extension that prevents accidental message sending in ChatGPT.
 
 ## Changelog
 
+### 1.3.6
+- Support Enter newlines and configured send shortcuts in ChatGPT side chats while the main chat remains open
+- Resolve the focused editor within its composer form, retaining ambiguity and send-button safety checks
+- Isolate IME state per editor and retain CRLF paste normalization with form identity validation
+- No permission changes or added external communication
+- User-reported real ChatGPT verification: all nine checks passed; see the [release validation record](tests/playwright/README.md#v136-release-validation)
+
 ### 1.3.1
 - Updated configured send shortcuts to use the verified send button in the new ChatGPT composer
 - Updated ChatGPT composer detection for compatibility with the latest ChatGPT Web UI
@@ -71,3 +78,5 @@ Developed by Marushin
 
 Unit tests: `npm test`. Browser integration tests: `npm run test:browser`.
 Run both with `npm run test:all`. See [Playwright Mock DOM tests](tests/playwright/README.md) for setup, fixtures, and coverage limits.
+
+`manifest.json` is the extension version source of truth. From 1.3.6, keep the private test package version and both root versions in `package-lock.json` synchronized with it. The earlier 1.3.3 package metadata remained unchanged during the 1.3.4/1.3.5 manifest updates; no independent package release policy was recorded.
