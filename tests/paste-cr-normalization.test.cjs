@@ -893,4 +893,206 @@ test('display eligibility has no fixed position, minimum size or ancestor opacit
   assert.equal(h.event('keydown', { code: 'Enter' }).prevented, true);
   assert.equal(dispatched.length, 1); h.clean();
 });
+
+if (dom === 'modern') {
+  const sendFragment = 'codex-icon-arrow-up-lg-light-20';
+  function icon(button, fragment = sendFragment) {
+    return button.append(new Element('SVG')).append(new Element('USE', {href:'/cdn/assets/observed.svg#' + fragment}));
+  }
+  async function dots(mode = 'shift', os = 'win') {
+    const h = await setup(true, os, mode);
+    h.context.location.href = 'https://chatgpt.com/dots/example~thread';
+    h.body.childNodes = [];
+    h.dotsBody = h.body.append(new Element('DIV', {'data-composer-body':''}));
+    h.container = h.dotsBody.append(new Element('DIV', {'data-composer-footer-responsive':''}));
+    h.container.append(h.root);
+    for (const label of ['ファイルなどを追加', '音声入力']) {
+      const b = h.container.append(new Element('BUTTON', { type: 'button', 'aria-label': label }));
+      b.click = () => assert.fail('Unrelated button clicked');
+    }
+    h.container.append(h.button);
+    h.button.attrs = { type: 'button', 'aria-label': '送信' };
+    h.use = icon(h.button);
+    h.button.click = () => h.clicks.push(h.button);
+    h.populate(['message']);
+    h.keys = []; h.root.dispatchEvent = e => h.keys.push(e);
+    h.send = extra => h.event('keydown', { code: 'Enter', shiftKey: true, ...extra });
+    return h;
+  }
+  test('dots: newline dispatch and all configured shortcuts', async () => {
+    for (const [mode, os, mods] of [
+      ['shift', 'win', {shiftKey:true}], ['ctrl', 'win', {ctrlKey:true}],
+      ['both', 'win', {ctrlKey:true}], ['combo', 'win', {ctrlKey:true,shiftKey:true}],
+      ['cmd', 'mac', {metaKey:true}], ['shiftCmd', 'mac', {metaKey:true,shiftKey:true}]
+    ]) {
+      const h = await dots(mode, os);
+      assert.equal(h.event('keydown', {code:'Enter'}).defaultPrevented, true);
+      assert.equal(h.keys.length, 1); assert.equal(h.keys[0].shiftKey, true);
+      h.event('keydown', {code:'Enter', ...mods}); assert.equal(h.clicks.length, 1);
+    }
+  });
+  for (const reason of ['missing', 'multiple', 'disabled', 'aria-disabled', 'hidden', 'opacity',
+    'zero-size', 'foreign-form', 'empty', 'whitespace', 'two-editors', 'unrelated-textbox',
+    'no-focus', 'document-blur', 'disconnected-editor', 'hidden-editor', 'readonly-editor',
+    'non-dots', 'dots-prefix', 'other-host', 'http', 'unknown-fragment', 'unknown-container',
+    'outside-button', 'existing-unknown-form']) {
+    test('dots: rejects ' + reason, async () => {
+      const h = await dots();
+      if (reason === 'missing' || reason === 'outside-button') {
+        h.container.childNodes = h.container.childNodes.filter(n => n !== h.button);
+        h.body.append(h.button);
+      }
+      if (reason === 'multiple') icon(h.container.append(new Element('BUTTON', {type:'button'})));
+      if (reason === 'disabled') h.button.disabled = true;
+      if (reason === 'aria-disabled') h.container.attrs['aria-disabled'] = 'true';
+      if (reason === 'hidden') h.button.attrs.hidden = '';
+      if (reason === 'opacity') h.container.style = {opacity:'0'};
+      if (reason === 'zero-size') h.button.rect = {width:0};
+      if (reason === 'foreign-form') h.button.attrs.form = 'outside';
+      if (reason === 'empty') h.resetEmpty();
+      if (reason === 'whitespace') h.populate([' \n ']);
+      if (reason === 'two-editors') h.container.append(new Element('DIV', {...h.root.attrs}));
+      if (reason === 'unrelated-textbox') h.container.append(new Element('TEXTAREA'));
+      if (reason === 'no-focus') h.document.activeElement = h.body;
+      if (reason === 'document-blur') h.document.hasFocus = () => false;
+      if (reason === 'disconnected-editor') h.root.isConnected = false;
+      if (reason === 'hidden-editor') h.root.attrs.hidden = '';
+      if (reason === 'readonly-editor') h.root.isContentEditable = false;
+      if (reason === 'non-dots') h.context.location.href = 'https://chatgpt.com/c/example';
+      if (reason === 'dots-prefix') h.context.location.href = 'https://chatgpt.com/dots-other/example';
+      if (reason === 'other-host') h.context.location.href = 'https://chat.openai.com/dots/example';
+      if (reason === 'http') h.context.location.href = 'http://chatgpt.com/dots/example';
+      if (reason === 'unknown-fragment') h.use.attrs.href = '#unknown';
+      if (reason === 'unknown-container') delete h.container.attrs['data-composer-footer-responsive'];
+      if (reason === 'existing-unknown-form') h.container.tagName = 'FORM';
+      h.send(); assert.equal(h.clicks.length, 0);
+    });
+  }
+  test('dots: IME, 229, grace, repeat, cancellation and OFF guards', async () => {
+    for (const extra of [{isComposing:true}, {keyCode:229}, {repeat:true}, {isTrusted:false},
+      {cancelable:false}, {defaultPrevented:true}, {altKey:true}]) {
+      const h = await dots(); h.send(extra); assert.equal(h.clicks.length, 0);
+    }
+    const h = await dots();
+    h.event('compositionstart'); h.send(); assert.equal(h.clicks.length, 0);
+    h.event('compositionend'); h.send(); h.frame(79); h.send(); assert.equal(h.clicks.length, 0);
+    h.frame(1); h.send(); assert.equal(h.clicks.length, 1);
+    h.change('enabled', false);
+    assert.equal(h.send().defaultPrevented, false);
+    assert.equal(h.event('keydown', {code:'Enter'}).defaultPrevented, false);
+    assert.equal(h.clicks.length, 1);
+  });
+  test('dots: live editor replacement and no stale target send', async () => {
+    const h = await dots(), old = h.root;
+    const next = new Element('DIV', {...old.attrs}); next.append(new Text('replacement'));
+    h.container.childNodes = h.container.childNodes.filter(n => n !== old);
+    old.isConnected = false; h.container.append(next); h.document.activeElement = next;
+    h.send(); assert.equal(h.clicks.length, 0);
+    h.send({target:next}); assert.equal(h.clicks.length, 1);
+  });
+  test('dots: container/button changes during cancellation cannot redirect a send', async () => {
+    for (const kind of ['button', 'container']) {
+      const h = await dots();
+      h.send({preventDefault() {
+        this.defaultPrevented = true;
+        if (kind === 'button') {
+          h.container.childNodes = h.container.childNodes.filter(n => n !== h.button);
+          const other = h.container.append(new Element('BUTTON', {...h.button.attrs}));
+          icon(other);
+          other.click = () => assert.fail('Replacement clicked');
+        } else {
+          const other = h.dotsBody.append(new Element('DIV', {...h.container.attrs}));
+          other.childNodes = h.container.childNodes;
+          for (const node of other.childNodes) node.parentNode = other;
+          h.container.childNodes = [];
+        }
+      }});
+      assert.equal(h.clicks.length, 0);
+    }
+  });
+  test('dots: click exception does not retry or synthesize send', async () => {
+    const h = await dots(); let calls = 0;
+    h.button.click = () => { calls++; throw Error('after dispatch'); };
+    h.send(); assert.equal(calls, 1); assert.equal(h.keys.length, 0);
+  });
+  test('dots: existing marked form still uses its submitter', async () => {
+    const h = await setup();
+    h.context.location.href = 'https://chatgpt.com/dots/example~thread';
+    h.event('keydown', {code:'Enter', shiftKey:true});
+    assert.equal(h.clicks.length, 1); assert.equal(h.submissions.length, 1);
+  });
+  test('dots: existing eligible CRLF paste remains one native insertion', async () => {
+    const h = await dots(); h.resetEmpty();
+    h.paste(); h.frame(500);
+    assert.deepEqual(h.commands, [{command:'insertText', ui:false, text:'abc\ndef'}]);
+    assert.equal(h.clicks.length, 0); h.clean();
+  });
+  // Language, layout and future UI mutations below are resilience scenarios,
+  // not observations of real English UI or the real Dots stop button.
+  for (const variant of ['Japanese', 'English', 'none', 'arbitrary', 'sprite-hash',
+    'auxiliary-removed', 'auxiliary-added', 'hidden-input', 'multiline', 'hidden-home']) {
+    test('dots: language-independent successful send: ' + variant, async () => {
+      const h = await dots();
+      for (const b of h.container.querySelectorAll('button')) {
+        if (variant === 'English') b.attrs['aria-label'] = b === h.button ? 'Send' : 'Other';
+        if (variant === 'none') delete b.attrs['aria-label'];
+        if (variant === 'arbitrary') { b.attrs['aria-label'] = '任意/Envoyer'; b.attrs.title = 'unrelated'; }
+      }
+      if (variant === 'sprite-hash') h.use.attrs.href = 'https://chatgpt.com/cdn/assets/new-hash.svg#' + sendFragment;
+      if (variant === 'auxiliary-removed') h.container.childNodes = [h.root, h.button];
+      if (variant === 'auxiliary-added') {
+        const b = h.container.append(new Element('BUTTON', {type:'button'}));
+        b.click = () => assert.fail('Unknown auxiliary clicked');
+        icon(b, 'other-icon');
+      }
+      if (variant === 'hidden-input') h.container.append(new Element('INPUT', {type:'file', hidden:''}));
+      if (variant === 'multiline') h.container.attrs['data-composer-layout'] = 'multi-line';
+      if (variant === 'hidden-home') h.body.append(new Element('DIV', {...h.root.attrs, hidden:''}));
+      h.send(); assert.equal(h.clicks.length, 1, variant);
+    });
+  }
+  for (const fragment of ['arrow', 'codex-icon-arrow-up-lg-light-20-stop',
+    'stop-codex-icon-arrow-up-lg-light-20', 'hypothetical-stop', '', 'codex-icon-arrow-up-lg-light-20#extra']) {
+    test('dots: hypothetical other/stop fragment is never activated: ' + fragment, async () => {
+      const h = await dots(); h.use.attrs.href = '#' + fragment;
+      h.send(); assert.equal(h.clicks.length, 0);
+    });
+  }
+  test('dots: independent footers route only to the focused editor', async () => {
+    const h = await dots();
+    const second = h.dotsBody.append(new Element('DIV', {...h.container.attrs}));
+    const editor = second.append(new Element('DIV', {...h.root.attrs})); editor.append(new Text('second'));
+    const button = second.append(new Element('BUTTON', {type:'button'})); icon(button);
+    let secondClicks = 0; button.click = () => secondClicks++;
+    h.send(); assert.equal(h.clicks.length, 1); assert.equal(secondClicks, 0);
+    h.document.activeElement = editor;
+    h.send(); assert.equal(h.clicks.length, 1); // Stale event target has lost focus.
+    h.send({target:editor}); assert.equal(secondClicks, 1);
+    h.event('compositionstart', {target:editor}); h.send({target:editor}); assert.equal(secondClicks, 1);
+    h.document.activeElement = h.root; h.send(); assert.equal(h.clicks.length, 2);
+  });
+  for (const change of ['fragment', 'focus', 'inert', 'navigation', 'nested-footer', 'missing-body', 'duplicate-disabled']) {
+    test('dots: final revalidation rejects ' + change, async () => {
+      const h = await dots();
+      h.send({preventDefault() {
+        this.defaultPrevented = true;
+        if (change === 'fragment') h.use.attrs.href = '#hypothetical-stop';
+        if (change === 'focus') h.document.activeElement = h.body;
+        if (change === 'inert') h.container.attrs.inert = '';
+        if (change === 'navigation') h.button.attrs['data-composer-navigation-target'] = 'add-context';
+        if (change === 'missing-body') delete h.dotsBody.attrs['data-composer-body'];
+        if (change === 'duplicate-disabled') {
+          const b = h.container.append(new Element('BUTTON', {type:'button'})); b.disabled = true; icon(b);
+        }
+        if (change === 'nested-footer') {
+          h.container.childNodes = h.container.childNodes.filter(n => n !== h.button);
+          h.container.append(new Element('DIV', {...h.container.attrs})).append(h.button);
+        }
+      }});
+      assert.equal(h.clicks.length, 0);
+    });
+  }
+
+}
+
 }

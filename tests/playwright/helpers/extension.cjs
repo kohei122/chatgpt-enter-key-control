@@ -25,7 +25,7 @@ const test = base.extend({
         await fs.cp(path.join(repo, name), path.join(extensionPath, name), { recursive: true });
       }
       for (const script of manifest.content_scripts) {
-        script.matches = ['http://127.0.0.1/*', 'https://chatgpt.com/__enter-key-control-tests__/*'];
+        script.matches = ['http://127.0.0.1/*', 'https://chatgpt.com/__enter-key-control-tests__/*', 'https://chatgpt.com/dots/*'];
       }
       // Test-only bootstrap gives access to the actual extension's chrome.storage.
       // Production has no service worker; this worker has no keyboard/DOM/send logic.
@@ -74,7 +74,7 @@ const test = base.extend({
         const url = new URL(route.request().url());
         // Offline fixture origin exercises the shipping paste URL guard. Never fetch this URL.
         if (url.origin === 'https://chatgpt.com') {
-          const name = url.pathname.replace(/^\/__enter-key-control-tests__\//, '/').slice(1);
+          const name = url.pathname.replace(/^\/(?:__enter-key-control-tests__|dots)\//, '/').slice(1);
           if (/^[a-z-]+\.(html|js|css)$/.test(name)) {
             const body = await fs.readFile(path.join(fixtures, name));
             const contentType = name.endsWith('.html') ? 'text/html' :
@@ -99,7 +99,7 @@ const test = base.extend({
         await context.waitForEvent('serviceworker');
       expect(worker.url()).toMatch(/^chrome-extension:\/\/[a-p]{32}\/test-bootstrap\.js$/);
       const page = await context.newPage();
-      const open = async (name, { mode = 'shift', enabled = true, pasteOrigin = false } = {}) => {
+      const open = async (name, { mode = 'shift', enabled = true, pasteOrigin = false, dotsOrigin = false } = {}) => {
         // Existing sanitization of string booleans gives an observable ready signal:
         // content.js sets settingsLoaded before persisting the boolean value.
         await worker.evaluate(async ({ mode, enabled }) => {
@@ -107,7 +107,7 @@ const test = base.extend({
           await chrome.storage.local.set({ mode, enabled: String(enabled) });
         }, { mode, enabled });
         if (pasteOrigin) await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'https://chatgpt.com' });
-        await page.goto((pasteOrigin ? 'https://chatgpt.com/__enter-key-control-tests__' : origin) + '/' + name + '.html');
+        await page.goto((dotsOrigin ? 'https://chatgpt.com/dots' : pasteOrigin ? 'https://chatgpt.com/__enter-key-control-tests__' : origin) + '/' + name + '.html');
         await expect(page.locator('html')).toHaveAttribute(
           'data-chatgpt-enter-key-control-initialized', 'true');
         await expect.poll(() => worker.evaluate(async () =>

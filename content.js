@@ -168,6 +168,10 @@ function getComposerForTarget(target) {
     // Count all candidates inside this form, including malformed nested structures.
     return candidates.filter(candidate => form.contains(candidate)).length === 1 ? root : null;
   }
+  const dotsContainer = getDotsComposerContainer(root);
+  if (dotsContainer) {
+    return candidates.filter(candidate => dotsContainer.contains(candidate)).length === 1 ? root : null;
+  }
   // Preserve singleton legacy/unknown-form behavior without extending it to multi-composer UI.
   return candidates.length === 1 ? root : null;
 }
@@ -184,10 +188,66 @@ function isRecognizedChatGPTComposerForm(form) {
       ["thread", "home"].includes(form?.getAttribute("data-composer-placement")));
 }
 
-function sendFromComposer(composer, target, expectedForm) {
+// Observed form-less Dots structure; layout values and translated labels are not contracts.
+function getDotsComposerContainer(composer) {
+  if (!/^https:\/\/chatgpt\.com\/dots(?:\/[^?#]*)?(?:[?#]|$)/.test(location.href) ||
+      composer.closest("form")) return null;
+  const container = composer.closest('div[data-composer-footer-responsive]');
+  const body = container?.parentElement?.closest('div[data-composer-body]');
+  return container?.isConnected && body?.isConnected ? container : null;
+}
+
+function getDotsSendContext(composer) {
+  const container = getDotsComposerContainer(composer);
+  if (!container) return null;
+  const editors = Array.from(container.querySelectorAll(
+    '[role="textbox"], textarea, [contenteditable="true"]'
+  )).filter(isDisplayedChatGPTComposer);
+  if (editors.length !== 1 || editors[0] !== composer) return null;
+  const sends = Array.from(container.querySelectorAll('button[type="button"]')).filter(button =>
+    button.closest('div[data-composer-footer-responsive]') === container &&
+    Array.from(button.querySelectorAll('use')).some(use => {
+      const href = use.getAttribute("href") || "";
+      const hash = href.indexOf("#");
+      return use.closest("svg") && use.closest("button") === button && hash !== -1 &&
+        href.slice(hash + 1) === "codex-icon-arrow-up-lg-light-20";
+    }));
+  // Count candidates before availability checks; a disabled duplicate is still ambiguous.
+  if (sends.length !== 1) return null;
+  const button = sends[0];
+  if (button.form || button.hasAttribute("form") || button.closest("form") ||
+      button.hasAttribute("data-composer-navigation-target")) return null;
+  return { container, button };
+}
+
+function sendFromDots(composer, target, expected) {
+  if (!expected || !composer.textContent.trim()) return;
+  const { container, button } = expected;
+  if (!button.isConnected || button.disabled || button.matches(":disabled") ||
+      button.closest('[hidden], [inert], [aria-hidden="true"], [aria-disabled="true"]') ||
+      button.getClientRects().length === 0 || typeof button.click !== "function") return;
+  const rect = button.getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) return;
+  for (let node = button; node; node = node.parentElement) {
+    const style = window.getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden" ||
+        style.visibility === "collapse" || style.opacity === "0") return;
+  }
+  const current = getDotsSendContext(composer);
+  if (getComposerForTarget(target) !== composer || isComposerComposing(composer) ||
+      current?.container !== container || current?.button !== button) return;
+  try { button.click(); }
+  catch (_) { /* Never retry a click that may already have sent. */ }
+}
+
+function sendFromComposer(composer, target, expectedForm, expectedDots) {
   if (getComposerForTarget(target) !== composer || isComposerComposing(composer)) return;
   const form = composer.closest("form");
   if (form !== expectedForm) return;
+  if (!form && expectedDots) {
+    sendFromDots(composer, target, expectedDots);
+    return;
+  }
   const usesFormSend = composer.id !== "prompt-textarea" ||
     isRecognizedChatGPTComposerForm(form);
   if (!usesFormSend) {
@@ -267,8 +327,9 @@ function handleKey(event) {
   // Configured shortcut -> send
   if (isSend) {
     const canSend = event.cancelable && !event.defaultPrevented && !event.repeat && !event.altKey;
+    const dots = canSend && !form ? getDotsSendContext(composer) : null;
     blockEnterEvent(event);
-    if (canSend && event.defaultPrevented) sendFromComposer(composer, event.target, form);
+    if (canSend && event.defaultPrevented) sendFromComposer(composer, event.target, form, dots);
     return;
   }
 
